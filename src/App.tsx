@@ -81,13 +81,38 @@ export default function App() {
 
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
-  const [ownerView, setOwnerView] = useState<'harian' | 'bulanan'>('harian');
+  const [ownerView, setOwnerView] = useState<'harian' | 'bulanan' | 'settings'>('harian');
   const [targetJamKerja, setTargetJamKerja] = useState<number>(8);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
   const [laporanBulan, setLaporanBulan] = useState<string>(() => {
     const d = new Date();
     return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}`;
   });
+
+  const [errorNames, setErrorNames] = useState("");
+  const [errorRiwayat, setErrorRiwayat] = useState("");
+  const [errorRingkasan, setErrorRingkasan] = useState("");
+  const [errorLaporan, setErrorLaporan] = useState("");
+  const [settingsData, setSettingsData] = useState<any>(null);
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [errorSettings, setErrorSettings] = useState("");
+
+  const fetchWithRetry = async (url: string, options?: RequestInit, retries = 2): Promise<Response> => {
+    let lastErr: any;
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await fetch(url, options);
+        return res;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[Network] Fetch attempt ${i + 1} failed. Retrying...`);
+        if (i < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+      }
+    }
+    throw lastErr;
+  };
 
 
   const [selectedPegawaiDetail, setSelectedPegawaiDetail] = useState<{nama: string, bulan: string} | null>(null);
@@ -219,45 +244,56 @@ export default function App() {
   }, [keterangan, absenHariIni]);
 
 
-  useEffect(() => {
-    // Fetch daftar pegawai from GAS Web App
-    const fetchPegawai = async () => {
-      try {
-        if (!GAS_URL) {
-          // Dummy data for AI Studio preview if no URL provided
-          setDaftarPegawai(["Mohammad Danang", "Bambang", "Fitri Fajria", "Irma Damayanti", "M. Hari Yanto"]);
-          setLoadingNames(false);
-          return;
-        }
-
-
-        const res = await fetch(`${GAS_URL}?action=getPegawai`);
-        const data = await res.json();
-        
-        if (data.status === 'success') {
-          setDaftarPegawai(data.data);
-        } else {
-          throw new Error("Gagal load data pegawai");
-        }
-      } catch (err) {
-        console.error(err);
-        // Fallback for preview
-        setDaftarPegawai(["Fitri Fajria (Preview offline)", "Mohammad Danang (Preview offline)"]);
-        if (activeTab === 'absen') {
-          setStatusMessage({ text: "Preview mode: Menjalankan data lokal (GAS_URL belum diset).", type: "info" });
-        }
-      } finally {
+  const fetchPegawai = async () => {
+    setLoadingNames(true);
+    setErrorNames("");
+    try {
+      if (!GAS_URL) {
+        setDaftarPegawai(["Mohammad Danang", "Bambang", "Fitri Fajria", "Irma Damayanti", "M. Hari Yanto"]);
         setLoadingNames(false);
+        return;
       }
-    };
 
+      console.log(`[fetchPegawai] Mengirim request ke: ${GAS_URL}?action=getPegawai`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getPegawai`);
+      const textData = await res.text();
+      console.log(`[fetchPegawai] Response raw text:`, textData);
+      
+      let data;
+      try {
+        data = JSON.parse(textData);
+      } catch (parseErr) {
+        console.error(`[fetchPegawai] JSON Parse Error. Response bukan JSON yang valid. Pastikan URL Web App benar dan di-deploy sebagai 'Anyone'. Raw:`, textData);
+        throw new Error("Format respons dari server tidak valid (Bukan JSON). Periksa URL App Script Anda.");
+      }
 
+      if (data.status === 'success') {
+        console.log(`[fetchPegawai] Berhasil mendapatkan data pegawai:`, data.data);
+        setDaftarPegawai(data.data);
+        setErrorNames("");
+      } else {
+        console.error(`[fetchPegawai] Error dari server:`, data.message);
+        throw new Error(`Gagal load data pegawai: ${data.message || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      console.error(`[fetchPegawai] Kesalahan jaringan atau fetch:`, err);
+      setErrorNames(`Gagal memuat daftar pegawai: ${err?.message}`);
+      // Fallback for preview
+      setDaftarPegawai(["Fitri Fajria (Preview offline)", "Mohammad Danang (Preview offline)"]);
+    } finally {
+      setLoadingNames(false);
+    }
+  };
+
+  useEffect(() => {
     fetchPegawai();
+    fetchSettings();
   }, [GAS_URL, activeTab]);
 
 
   const fetchRiwayat = async (pegawaiName: string) => {
     setLoadingRiwayat(true);
+    setErrorRiwayat("");
     if (!GAS_URL) {
       setTimeout(() => {
         setRiwayat([
@@ -271,11 +307,29 @@ export default function App() {
 
 
     try {
-      const res = await fetch(`${GAS_URL}?action=getRiwayat&nama=${encodeURIComponent(pegawaiName)}`);
-      const data = await res.json();
-      if (data.status === 'success') setRiwayat(data.data);
-    } catch (e) {
-      console.error(e);
+      console.log(`[fetchRiwayat] Mendapatkan riwayat untuk ${pegawaiName}...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getRiwayat&nama=${encodeURIComponent(pegawaiName)}`);
+      const textData = await res.text();
+      console.log(`[fetchRiwayat] Response raw text:`, textData);
+      
+      let data;
+      try {
+        data = JSON.parse(textData);
+      } catch (e) {
+        throw new Error("Gagal mem-parsing riwayat. Periksa koneksi atau URL GAS.");
+      }
+      
+      if (data.status === 'success') {
+        console.log(`[fetchRiwayat] Sukses mendapatkan ${data.data?.length} baris riwayat.`);
+        setRiwayat(data.data);
+      } else {
+        console.error(`[fetchRiwayat] Error dari server: ${data.message}`);
+        throw new Error(data.message || 'Unknown error');
+      }
+    } catch (e: any) {
+      console.error(`[fetchRiwayat] Kesalahan:`, e);
+      setErrorRiwayat(`Gagal memuat riwayat: ${e?.message}`);
+      setStatusMessage({ text: `Gagal memuat riwayat: ${e.message}`, type: "error" });
     } finally {
       setLoadingRiwayat(false);
     }
@@ -284,6 +338,7 @@ export default function App() {
 
   const fetchRingkasanHarian = async () => {
     setLoadingRingkasan(true);
+    setErrorRingkasan("");
     if (!GAS_URL) {
       setTimeout(() => {
         setRingkasanHarian([
@@ -324,11 +379,25 @@ export default function App() {
 
 
     try {
-      const res = await fetch(`${GAS_URL}?action=getRingkasanHarian`);
-      const data = await res.json();
-      if (data.status === 'success') setRingkasanHarian(data.data);
-    } catch (e) {
-      console.error(e);
+      console.log(`[fetchRingkasanHarian] Memuat ringkasan hari ini...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian`);
+      const textData = await res.text();
+      console.log(`[fetchRingkasanHarian] Response raw text:`, textData);
+      
+      let data = JSON.parse(textData);
+      if (data.status === 'success') {
+        console.log(`[fetchRingkasanHarian] Berhasil mendapat ${data.data?.length} ringkasan harian.`);
+        setRingkasanHarian(data.data);
+      } else {
+        console.error(`[fetchRingkasanHarian] Server Error: ${data.message}`);
+        throw new Error(data.message || 'Unknown error');
+      }
+    } catch (e: any) {
+      console.error(`[fetchRingkasanHarian] Error:`, e);
+      setErrorRingkasan(`Gagal memuat ringkasan harian: ${e.message}`);
+      // if (activeTab === 'monitoring') { // Actually 'owner' now
+      //   setStatusMessage({ text: `Gagal memuat ringkasan harian: ${e.message}`, type: "error" });
+      // }
     } finally {
       setLoadingRingkasan(false);
     }
@@ -337,6 +406,7 @@ export default function App() {
 
   const fetchLaporanBulanan = async (bulan: string = laporanBulan) => {
     setLoadingLaporan(true);
+    setErrorLaporan("");
     if (!GAS_URL) {
       setTimeout(() => {
         setLaporanBulanan([
@@ -364,13 +434,58 @@ export default function App() {
 
 
     try {
-      const res = await fetch(`${GAS_URL}?action=getLaporanBulanan&bulan=${bulan}`);
-      const data = await res.json();
-      if (data.status === 'success') setLaporanBulanan(data.data);
-    } catch (e) {
-      console.error(e);
+      console.log(`[fetchLaporanBulanan] Memuat laporan untuk bulan ${bulan}...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getLaporanBulanan&bulan=${bulan}`);
+      const textData = await res.text();
+      console.log(`[fetchLaporanBulanan] Response raw text:`, textData);
+      
+      let data = JSON.parse(textData);
+      if (data.status === 'success') {
+        console.log(`[fetchLaporanBulanan] Berhasil mendapatkan laporan ${data.data?.length} pegawai.`);
+        setLaporanBulanan(data.data);
+      } else {
+        console.error(`[fetchLaporanBulanan] Server Error: ${data.message}`);
+        throw new Error(data.message || 'Unknown error');
+      }
+    } catch (e: any) {
+      console.error(`[fetchLaporanBulanan] Error:`, e);
+      setErrorLaporan(`Gagal memuat laporan bulanan: ${e.message}`);
     } finally {
       setLoadingLaporan(false);
+    }
+  };
+
+  const fetchSettings = async () => {
+    setLoadingSettings(true);
+    setErrorSettings("");
+    if (!GAS_URL) {
+      setLoadingSettings(false);
+      return;
+    }
+    try {
+      console.log(`[fetchSettings] Memuat pengaturan...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getSettings`);
+      const textData = await res.text();
+      let data = JSON.parse(textData);
+      if (data.status === 'success') {
+        setSettingsData(data.data);
+        if (data.data.favicon) {
+          let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+          if (!link) {
+            link = document.createElement('link');
+            link.rel = 'icon';
+            document.getElementsByTagName('head')[0].appendChild(link);
+          }
+          link.href = data.data.favicon;
+        }
+      } else {
+        throw new Error(data.message || 'Unknown error fetching settings');
+      }
+    } catch (e: any) {
+      console.error(`[fetchSettings] Error:`, e);
+      setErrorSettings(`Gagal memuat pengaturan: ${e.message}`);
+    } finally {
+      setLoadingSettings(false);
     }
   };
 
@@ -601,13 +716,24 @@ export default function App() {
 
 
         try {
+          console.log(`[kirimAbsen] Kirim payload (POST) ke: ${GAS_URL}`);
+          console.log(`[kirimAbsen] Data yg dikirim:`, payload);
           const res = await fetch(GAS_URL, {
             method: 'POST',
             body: JSON.stringify(payload)
           });
-          const result = await res.json();
+          const textData = await res.text();
+          console.log(`[kirimAbsen] Raw response dari server:`, textData);
+          
+          let result;
+          try {
+            result = JSON.parse(textData);
+          } catch(e) {
+            throw new Error(`Data tidak valid dari server (Web App perlu redeploy). Raw: ${textData.substring(0,50)}...`);
+          }
           
           if (result.status === 'success') {
+            console.log(`[kirimAbsen] Berhasil mencatat absen:`, result);
             setStatusMessage({ text: result.message, type: "success" });
             setImageBase64(""); // reset photo
             setBuktiFeishuBase64("");
@@ -618,10 +744,12 @@ export default function App() {
               document.getElementById('riwayat-absen')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 300);
           } else {
+            console.error(`[kirimAbsen] Gagal kirim API:`, result.message);
             setStatusMessage({ text: `Gagal: ${result.message}`, type: "error" });
           }
         } catch (err: any) {
-          setStatusMessage({ text: `Error Jaringan: ${err.message}`, type: "error" });
+          console.error(`[kirimAbsen] Exception Fetch/POST:`, err);
+          setStatusMessage({ text: `Error: ${err.message}`, type: "error" });
         } finally {
           setLoadingSubmit(false);
         }
@@ -789,6 +917,14 @@ export default function App() {
                 <option value="" disabled>{loadingNames ? "Memuat nama..." : "Pilih Nama Pegawai"}</option>
                 {daftarPegawai.map((n, i) => <option key={i} value={n}>{n}</option>)}
               </select>
+              {errorNames && (
+                <div className="mt-2 p-2 bg-red-50 border border-red-200 text-sm text-red-700 rounded flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-2">
+                  <span className="leading-tight">{errorNames}</span>
+                  <button type="button" onClick={() => fetchPegawai()} className="shrink-0 px-3 py-1 bg-white border border-red-300 font-bold rounded hover:bg-red-50 transition shadow-sm">
+                    Coba Lagi
+                  </button>
+                </div>
+              )}
             </div>
 
 
@@ -1022,6 +1158,15 @@ export default function App() {
           <div className="p-0 overflow-x-auto">
             {loadingRiwayat ? (
               <div className="text-center text-sm text-neutral-500 py-6">Memuat riwayat...</div>
+            ) : errorRiwayat ? (
+              <div className="text-center p-4">
+                <div className="bg-red-50 text-red-700 text-sm p-3 rounded mb-3 font-medium border border-red-200">
+                  {errorRiwayat}
+                </div>
+                <button onClick={() => fetchRiwayat(nama)} className="px-4 py-1.5 text-sm font-bold bg-white border border-neutral-300 rounded shadow-sm hover:bg-neutral-50 transition">
+                  Coba Lagi
+                </button>
+              </div>
             ) : riwayat.length === 0 ? (
               <div className="text-center text-sm text-neutral-500 py-6">Belum ada riwayat absensi.</div>
             ) : (
@@ -1117,6 +1262,14 @@ export default function App() {
                   >
                     Laporan Bulanan
                   </button>
+                  <button 
+                    onClick={() => {
+                      setOwnerView('settings');
+                    }}
+                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'settings' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    Settings
+                  </button>
                 </div>
               </div>
 
@@ -1141,6 +1294,15 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+                  
+                  {errorRingkasan && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
+                      <span className="text-sm font-medium">{errorRingkasan}</span>
+                      <button onClick={fetchRingkasanHarian} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
+                        Coba Lagi
+                      </button>
+                    </div>
+                  )}
                   
                   {!loadingRingkasan && ringkasanHarian.length > 0 && (
                     <div className="grid grid-cols-3 gap-3 mb-6">
@@ -1424,6 +1586,15 @@ export default function App() {
                     </div>
                   </div>
                   
+                  {errorLaporan && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
+                      <span className="text-sm font-medium">{errorLaporan}</span>
+                      <button onClick={() => fetchLaporanBulanan(laporanBulan)} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
+                        Coba Lagi
+                      </button>
+                    </div>
+                  )}
+                  
                   <div className="w-full">
                   {loadingLaporan ? (
                     <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat laporan bulanan...</div>
@@ -1520,6 +1691,41 @@ export default function App() {
                   )}
                   </div>
                 </>
+              )}
+
+
+              {ownerView === 'settings' && (
+                <div className="flex flex-col gap-4">
+                  <h2 className="font-bold text-neutral-700 text-lg">Pengaturan Aplikasi</h2>
+                  
+                  {loadingSettings ? (
+                    <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat pengaturan...</div>
+                  ) : errorSettings ? (
+                    <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
+                      <span className="text-sm font-medium">{errorSettings}</span>
+                      <button onClick={fetchSettings} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
+                        Coba Lagi
+                      </button>
+                    </div>
+                  ) : settingsData ? (
+                    <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm min-w-[300px] max-w-sm gap-4">
+                      {settingsData.favicon ? (
+                        <>
+                          <img src={settingsData.favicon} alt="Favicon URL" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-100" />
+                          <p className="text-xs font-medium text-center text-neutral-600 break-all">{settingsData.favicon}</p>
+                        </>
+                      ) : (
+                         <p className="text-sm text-neutral-500 text-center">Tidak ada favicon yang dikonfigurasi di Google Sheets 'Settings'.</p>
+                      )}
+                      
+                      <button onClick={fetchSettings} className="w-full text-sm font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 px-4 py-2 mt-2 rounded-lg transition">
+                        Muat Ulang Settings
+                      </button>
+                    </div>
+                  ) : (
+                     <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Tidak ada data pengaturan.</div>
+                  )}
+                </div>
               )}
             </div>
           )}

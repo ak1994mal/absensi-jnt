@@ -35,6 +35,8 @@ function doGet(e) {
       result = getLaporanBulanan(e.parameter.bulan);
     } else if (action === 'getRiwayatBulan') {
       result = getRiwayatBulan(e.parameter.nama, e.parameter.bulan);
+    } else if (action === 'getSettings') {
+      result = getSettings();
     } else {
       result = { status: 'error', message: 'Aksi GET tidak valid' };
     }
@@ -241,6 +243,19 @@ function processForm(data) {
   }
   
   return { status: "error", message: "Status absen tidak valid." };
+}
+
+function getSettings() {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("Settings");
+  if (!sheet) {
+    return { status: "error", message: "Sheet Settings tidak ditemukan" };
+  }
+  
+  // Mengambil favicon dari B2 (Row 2, Column 2)
+  const faviconUrl = sheet.getRange("B2").getValue();
+  
+  return { status: "success", data: { favicon: faviconUrl } };
 }
 
 function getPegawai() {
