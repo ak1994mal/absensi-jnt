@@ -1123,43 +1123,19 @@ export default function App() {
                 WAJIB ISI FORM PUSAT & UPLOAD BUKTI
               </div>
               
+              <div className="w-full h-[550px] border-b border-neutral-200 bg-neutral-50">
+                <iframe 
+                  src="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
+                  className="w-full h-full border-0"
+                  title="Form Feishu"
+                  allow="geolocation"
+                />
+              </div>
+              
               <div className="p-4 w-full flex flex-col items-center gap-3 border-b border-neutral-200">
-                {!isFeishuOpen ? (
-                  <>
-                    <p className="text-sm text-neutral-600 text-center">Form Feishu akan terbuka di tab baru. Setelah diisi, ambil screenshot dan upload di sini.</p>
-                    <a 
-                      href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      onClick={() => setIsFeishuOpen(true)}
-                      className="bg-blue-600 text-white px-5 py-3 w-full max-w-xs rounded shadow justify-center hover:bg-blue-700 transition font-semibold text-sm inline-flex items-center gap-2"
-                    >
-                      <ClipboardList className="w-5 h-5" />
-                      Buka Form Feishu
-                    </a>
-                  </>
-                ) : (
-                  <div className="w-full flex flex-col items-center gap-4 bg-blue-50 p-4 rounded-md border border-blue-100">
-                    <p className="text-sm text-blue-800 text-center font-medium">Bila sudah mengisi form, silakan upload screenshot bukti di bawah.</p>
-                    <button 
-                      onClick={() => {
-                        setIsFeishuOpen(false);
-                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-                      }}
-                      className="bg-[#cc0000] text-white hover:bg-[#a30000] px-5 py-3 rounded shadow transition font-bold text-sm flex justify-center items-center gap-2 w-full max-w-xs"
-                    >
-                      Kembali ke Halaman Absen
-                    </button>
-                    <a 
-                      href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-600 hover:text-blue-800 font-medium underline"
-                    >
-                      Buka ulang form Feishu
-                    </a>
-                  </div>
-                )}
+                <p className="text-sm text-neutral-600 text-center font-medium">
+                  Silakan isi form Feishu di atas langsung pada frame ini. Setelah selesai, ambil screenshot bukti pengisian dan upload di bawah.
+                </p>
               </div>
 
 
