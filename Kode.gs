@@ -60,6 +60,8 @@ function doPost(e) {
 
     if (action === 'processForm') {
       result = processForm(payload.data);
+    } else if (action === 'saveSettings') {
+      result = saveSettings(payload.data);
     } else {
       result = { status: 'error', message: 'Aksi POST tidak valid' };
     }
@@ -255,7 +257,44 @@ function getSettings() {
   // Mengambil favicon dari B2 (Row 2, Column 2)
   const faviconUrl = sheet.getRange("B2").getValue();
   
-  return { status: "success", data: { favicon: faviconUrl } };
+  // Mengambil requireLocation dari B3 (Row 3, Column 2)
+  let requireLocation = true; // default true
+  const requireLocationVal = sheet.getRange("B3").getValue();
+  if (requireLocationVal !== "") {
+    requireLocation = requireLocationVal === true || requireLocationVal === "TRUE" || requireLocationVal === "true";
+  }
+  
+  // Mengambil data outlet
+  const sheetOutlet = ss.getSheetByName("DataOutlet");
+  let outlets = [];
+  if (sheetOutlet) {
+    const values = sheetOutlet.getDataRange().getValues();
+    for (let i = 1; i < values.length; i++) {
+      if (values[i][0]) {
+        outlets.push({
+          nama: values[i][0],
+          lat: parseFloat(values[i][1]) || 0,
+          lng: parseFloat(values[i][2]) || 0,
+          radius: parseFloat(values[i][3]) || 150
+        });
+      }
+    }
+  }
+
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, outlets: outlets } };
+}
+
+function saveSettings(data) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("Settings");
+  if (!sheet) {
+    return { status: "error", message: "Sheet Settings tidak ditemukan" };
+  }
+  
+  // Set requireLocation ke B3
+  sheet.getRange("B3").setValue(data.requireLocation ? "TRUE" : "FALSE");
+  
+  return { status: "success", message: "Pengaturan berhasil disimpan" };
 }
 
 function getPegawai() {

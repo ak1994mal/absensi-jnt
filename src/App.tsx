@@ -142,10 +142,8 @@ export default function App() {
     }
   }, []);
 
-
   useEffect(() => {
     if (!('Notification' in window) || !('geolocation' in navigator)) return;
-
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -154,18 +152,18 @@ export default function App() {
         // Jika sudah absen hari ini, tak perlu notifikasi
         if (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") return;
 
-
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
+        const activeOutlets = settingsData?.outlets?.length ? settingsData.outlets : OUTLETS;
 
-
-        for (const out of OUTLETS) {
+        for (const out of activeOutlets) {
+          const radius = out.radius || 150;
           const dist = calculateDistance(userLat, userLng, out.lat, out.lng);
-          if (dist <= 150) {
+          if (dist <= radius) {
             hasNotifiedGeoRef.current = true;
             if (Notification.permission === 'granted') {
               new Notification("Pengingat Absensi J&T", {
-                body: `Anda berada di sekitar ${out.name}. Jangan lupa untuk Absen DATANG!`,
+                body: `Anda berada di sekitar ${out.name || out.nama}. Jangan lupa untuk Absen DATANG!`,
                 icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg",
                 vibrate: [200, 100, 200]
               });
@@ -180,11 +178,10 @@ export default function App() {
       { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
     );
 
-
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [absenHariIni]);
+  }, [absenHariIni, settingsData?.outlets]);
 
 
   const getSisaWaktuKerja = (jamDatangStr: string, targetJam: number) => {
@@ -452,6 +449,41 @@ export default function App() {
       setErrorLaporan(`Gagal memuat laporan bulanan: ${e.message}`);
     } finally {
       setLoadingLaporan(false);
+    }
+  };
+
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  const toggleLocationTracking = async () => {
+    const newStatus = settingsData?.requireLocation === false ? true : false;
+    
+    // Update locally first for instant feedback
+    setSettingsData((prev: any) => ({
+        ...prev,
+        requireLocation: newStatus
+    }));
+
+    setSavingSettings(true);
+    const loadingToastId = toast.loading("Menyimpan pengaturan...");
+    try {
+      const payload = {
+        action: 'saveSettings',
+        data: { requireLocation: newStatus }
+      };
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.status === "success") {
+        toast.success("Pengaturan lokasi berhasil disimpan.", { id: loadingToastId });
+      } else {
+        toast.error(`Gagal menyimpan (pastikan Kode.gs diperbarui): ${result.message}`, { id: loadingToastId });
+      }
+    } catch (e: any) {
+        toast.error(`Error menyimpan pengaturan: ${e.message}`, { id: loadingToastId });
+    } finally {
+        setSavingSettings(false);
     }
   };
 
@@ -756,8 +788,10 @@ export default function App() {
         }
     };
 
-    if (keterangan === 'IZIN') {
-      sendPayload(0, 0); // Skip GPS requirement for IZIN
+    const requireLocation = settingsData?.requireLocation !== undefined ? settingsData.requireLocation : true;
+
+    if (keterangan === 'IZIN' || !requireLocation) {
+      sendPayload(0, 0); // Skip GPS requirement for IZIN or if location tracking is disabled
     } else {
       toast.info("Mendapatkan lokasi GPS...");
       navigator.geolocation.getCurrentPosition(
@@ -769,22 +803,31 @@ export default function App() {
           // Verifikasi Radius Lokasi
           let outletLat = 0;
           let outletLng = 0;
+          let maxRadius = 150;
 
-          if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
-            outletLat = -6.205649180689262;
-            outletLng = 106.45134398119775;
-          } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
-            outletLat = -6.206571510648256;
-            outletLng = 106.38621792361727;
+          if (settingsData?.outlets && settingsData.outlets.length > 0) {
+            const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
+            if (selectedOutlet) {
+              outletLat = selectedOutlet.lat;
+              outletLng = selectedOutlet.lng;
+              maxRadius = selectedOutlet.radius || 150;
+            }
+          } else {
+            if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
+              outletLat = -6.205649180689262;
+              outletLng = 106.45134398119775;
+            } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
+              outletLat = -6.206571510648256;
+              outletLng = 106.38621792361727;
+            }
           }
 
           if (outletLat !== 0 && outletLng !== 0) {
             const distance = calculateDistance(userLat, userLng, outletLat, outletLng);
-            const MAX_RADIUS = 150; // Toleransi radius 150 meter
 
-            if (distance > MAX_RADIUS) {
+            if (distance > maxRadius) {
               setLoadingSubmit(false);
-              return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${MAX_RADIUS} meter.`);
+              return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${maxRadius} meter.`);
             }
           }
 
@@ -1007,8 +1050,16 @@ export default function App() {
                     className="w-full p-2.5 bg-neutral-50 border border-neutral-300 rounded-md focus:ring-2 focus:ring-[#cc0000] outline-none transition disabled:opacity-60 disabled:bg-neutral-100"
                   >
                     <option value="" disabled>Pilih Lokasi Outlet</option>
-                    <option value="YZ_ MDP PASIR JAHA BALARAJA">J&T Pasir Jaha Balaraja</option>
-                    <option value="YZ_ MDP JAYANTI CIKANDE">J&T Jayanti Cikande</option>
+                    {settingsData?.outlets && settingsData.outlets.length > 0 ? (
+                      settingsData.outlets.map((o: any) => (
+                        <option key={o.nama} value={o.nama}>{o.nama}</option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="YZ_ MDP PASIR JAHA BALARAJA">J&T Pasir Jaha Balaraja</option>
+                        <option value="YZ_ MDP JAYANTI CIKANDE">J&T Jayanti Cikande</option>
+                      </>
+                    )}
                   </select>
                 </div>
               </div>
@@ -1708,6 +1759,28 @@ export default function App() {
                          <p className="text-sm text-neutral-500 text-center">Tidak ada favicon yang dikonfigurasi di Google Sheets 'Settings'.</p>
                       )}
                       
+                      <div className="w-full h-px bg-neutral-100 my-2"></div>
+
+                      <div className="w-full flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS Absensi</p>
+                          <p className="text-xs text-neutral-500 mt-0.5">Harus absen di lokasi outlet</p>
+                        </div>
+                        <button 
+                          onClick={toggleLocationTracking}
+                          disabled={savingSettings}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            (settingsData.requireLocation !== false) ? 'bg-[#cc0000]' : 'bg-neutral-300'
+                          }`}
+                        >
+                          <span 
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              (settingsData.requireLocation !== false) ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
                       <button onClick={fetchSettings} className="w-full text-sm font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 px-4 py-2 mt-2 rounded-lg transition">
                         Muat Ulang Settings
                       </button>
