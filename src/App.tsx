@@ -792,9 +792,14 @@ export default function App() {
         },
         (err) => {
           setLoadingSubmit(false);
-          toast.error("GPS Error! Pastikan izin lokasi aktif.");
+          console.error("GPS Error:", err);
+          let errMsg = `GPS Error! Pastikan izin lokasi aktif. (${err.message})`;
+          if (err.code === 1) errMsg = "Akses Lokasi Ditolak! Tolong izinkan GPS di pengaturan browser Anda.";
+          else if (err.code === 2) errMsg = "Lokasi Tidak Tersedia! Pastikan GPS perangkat Anda aktif.";
+          else if (err.code === 3) errMsg = "Pencarian lokasi Timeout. Sinyal GPS mungkin lemah, coba di tempat yang lebih terbuka.";
+          toast.error(errMsg);
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
       );
     }
   };
