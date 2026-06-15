@@ -466,6 +466,7 @@ export default function App() {
       console.log(`[fetchSettings] Memuat pengaturan...`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getSettings`);
       const textData = await res.text();
+      console.log(`[fetchSettings] Response raw text:`, textData);
       let data = JSON.parse(textData);
       if (data.status === 'success') {
         setSettingsData(data.data);
@@ -873,7 +874,7 @@ export default function App() {
           className={`flex-1 py-2.5 rounded-lg font-bold text-sm transition-all flex justify-center items-center gap-2 ${activeTab === 'owner' ? 'bg-white text-[#cc0000] shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}
         >
           <Users className="w-4 h-4" />
-          Panel Owner
+          Owner
         </button>
       </div>
 
@@ -1232,7 +1233,7 @@ export default function App() {
                 <div>
                   <input 
                     type="password" 
-                    placeholder="Password (contoh: admin123)" 
+                    placeholder="Masukkan password..." 
                     value={ownerPasswordInput}
                     onChange={(e) => setOwnerPasswordInput(e.target.value)}
                     className="w-full p-3 bg-neutral-50 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-[#cc0000] focus:border-[#cc0000] outline-none transition"
