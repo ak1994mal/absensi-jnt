@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut } from 'lucide-react';
+import { Toaster, toast } from 'sonner';
 
 
 const GAS_URL = import.meta.env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
@@ -63,7 +64,6 @@ export default function App() {
   
   const [imageBase64, setImageBase64] = useState("");
   const [loadingSubmit, setLoadingSubmit] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const [buktiFeishuBase64, setBuktiFeishuBase64] = useState("");
 
 
@@ -329,7 +329,7 @@ export default function App() {
     } catch (e: any) {
       console.error(`[fetchRiwayat] Kesalahan:`, e);
       setErrorRiwayat(`Gagal memuat riwayat: ${e?.message}`);
-      setStatusMessage({ text: `Gagal memuat riwayat: ${e.message}`, type: "error" });
+      toast.error(`Gagal memuat riwayat: ${e.message}`);
     } finally {
       setLoadingRiwayat(false);
     }
@@ -396,7 +396,7 @@ export default function App() {
       console.error(`[fetchRingkasanHarian] Error:`, e);
       setErrorRingkasan(`Gagal memuat ringkasan harian: ${e.message}`);
       // if (activeTab === 'monitoring') { // Actually 'owner' now
-      //   setStatusMessage({ text: `Gagal memuat ringkasan harian: ${e.message}`, type: "error" });
+      //   toast.error(`Gagal memuat ringkasan harian: ${e.message}`);
       // }
     } finally {
       setLoadingRingkasan(false);
@@ -645,45 +645,45 @@ export default function App() {
 
 
   const kirimAbsen = () => {
-    setStatusMessage(null);
-    if (!nama) return setStatusMessage({ text: "Pilih Nama Pegawai terlebih dahulu!", type: "error" });
-    if (keterangan !== "PULANG" && !posisi) return setStatusMessage({ text: "Pilih Posisi terlebih dahulu!", type: "error" });
+    
+    if (!nama) return toast.error("Pilih Nama Pegawai terlebih dahulu!");
+    if (keterangan !== "PULANG" && !posisi) return toast.error("Pilih Posisi terlebih dahulu!");
     
     if (keterangan === "PULANG") {
       if (!absenHariIni || !absenHariIni.jamDatang || absenHariIni.jamDatang === "-") {
-        return setStatusMessage({ text: "Anda belum absen DATANG hari ini!", type: "error" });
+        return toast.error("Anda belum absen DATANG hari ini!");
       }
       if (absenHariIni.jamPulang && absenHariIni.jamPulang !== "-") {
-        return setStatusMessage({ text: "Anda sudah melakukan absen PULANG hari ini!", type: "error" });
+        return toast.error("Anda sudah melakukan absen PULANG hari ini!");
       }
     }
 
 
     if (keterangan === "DATANG" && absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") {
-      return setStatusMessage({ text: "Anda sudah melakukan absen DATANG hari ini! Silakan pilih Aktivitas absensi PULANG.", type: "error" });
+      return toast.error("Anda sudah melakukan absen DATANG hari ini! Silakan pilih Aktivitas absensi PULANG.");
     }
 
 
     if (keterangan !== "IZIN") {
-      if (!outlet) return setStatusMessage({ text: "Pilih Outlet tempat Anda absen!", type: "error" });
-      if (!imageBase64) return setStatusMessage({ text: "Silahkan ambil foto selfie bukti absensi!", type: "error" });
-      if (isLate && !keteranganTelat) return setStatusMessage({ text: "Harap isi keterangan alasan Anda telat!", type: "error" });
+      if (!outlet) return toast.error("Pilih Outlet tempat Anda absen!");
+      if (!imageBase64) return toast.error("Silahkan ambil foto selfie bukti absensi!");
+      if (isLate && !keteranganTelat) return toast.error("Harap isi keterangan alasan Anda telat!");
     } else {
-      if (!alasan) return setStatusMessage({ text: "Alasan detail tidak boleh kosong!", type: "error" });
-      if (!imageBase64) return setStatusMessage({ text: "Harap lampirkan bukti foto (Surat dokter / bukti lainnya)!", type: "error" });
+      if (!alasan) return toast.error("Alasan detail tidak boleh kosong!");
+      if (!imageBase64) return toast.error("Harap lampirkan bukti foto (Surat dokter / bukti lainnya)!");
     }
 
 
     if (showFeishu() && !buktiFeishuBase64) {
-      return setStatusMessage({ text: "Harap upload screenshot bukti mengisi Form Pusat (Feishu) terlebih dahulu!", type: "error" });
+      return toast.error("Harap upload screenshot bukti mengisi Form Pusat (Feishu) terlebih dahulu!");
     }
 
 
     setLoadingSubmit(true);
-    setStatusMessage({ text: "Memproses data absen...", type: "info" });
+    toast.info("Memproses data absen...");
 
     const sendPayload = async (userLat: number, userLng: number) => {
-        setStatusMessage({ text: "⏳ Mengirim data absen, mohon tunggu...", type: "info" });
+        toast.info("⏳ Mengirim data absen, mohon tunggu...");
         
         const payload = {
           action: "processForm",
@@ -706,7 +706,7 @@ export default function App() {
           // Simulate submit in AI Studio
           setTimeout(() => {
             setLoadingSubmit(false);
-            setStatusMessage({ text: `✅ Berhasil Absen (Mode Preview). Payload GPS: ${userLat}, ${userLng}`, type: "success" });
+            toast.success(`✅ Berhasil Absen (Mode Preview). Payload GPS: ${userLat}, ${userLng}`);
             fetchRiwayat(nama);
             setTimeout(() => {
               document.getElementById('riwayat-absen')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -735,7 +735,7 @@ export default function App() {
           
           if (result.status === 'success') {
             console.log(`[kirimAbsen] Berhasil mencatat absen:`, result);
-            setStatusMessage({ text: result.message, type: "success" });
+            toast.success(result.message);
             setImageBase64(""); // reset photo
             setBuktiFeishuBase64("");
             if (fileInputRef.current) fileInputRef.current.value = '';
@@ -746,11 +746,11 @@ export default function App() {
             }, 300);
           } else {
             console.error(`[kirimAbsen] Gagal kirim API:`, result.message);
-            setStatusMessage({ text: `Gagal: ${result.message}`, type: "error" });
+            toast.error(`Gagal: ${result.message}`);
           }
         } catch (err: any) {
           console.error(`[kirimAbsen] Exception Fetch/POST:`, err);
-          setStatusMessage({ text: `Error: ${err.message}`, type: "error" });
+          toast.error(`Error: ${err.message}`);
         } finally {
           setLoadingSubmit(false);
         }
@@ -759,7 +759,7 @@ export default function App() {
     if (keterangan === 'IZIN') {
       sendPayload(0, 0); // Skip GPS requirement for IZIN
     } else {
-      setStatusMessage({ text: "Mendapatkan lokasi GPS...", type: "info" });
+      toast.info("Mendapatkan lokasi GPS...");
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const userLat = pos.coords.latitude;
@@ -784,10 +784,7 @@ export default function App() {
 
             if (distance > MAX_RADIUS) {
               setLoadingSubmit(false);
-              return setStatusMessage({ 
-                text: `Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${MAX_RADIUS} meter.`, 
-                type: "error" 
-              });
+              return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${MAX_RADIUS} meter.`);
             }
           }
 
@@ -795,7 +792,7 @@ export default function App() {
         },
         (err) => {
           setLoadingSubmit(false);
-          setStatusMessage({ text: "GPS Error! Pastikan izin lokasi aktif.", type: "error" });
+          toast.error("GPS Error! Pastikan izin lokasi aktif.");
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
@@ -831,6 +828,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-100 p-4 md:p-8 font-sans text-neutral-800 flex flex-col items-center">
+      <Toaster position="top-center" richColors />
       
       {/* Reminder Absen Pulang */}
       {showPulangReminder && (
@@ -891,20 +889,6 @@ export default function App() {
 
         {/* Formulir */}
         <div className="p-6 space-y-5">
-          {statusMessage && (
-            <div className={`p-3 rounded border text-sm font-medium flex items-start gap-2
-              ${statusMessage.type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 
-                statusMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 
-                'bg-blue-50 text-blue-700 border-blue-200'}`}
-            >
-              {statusMessage.type === 'error' ? <AlertCircle className="w-5 h-5 shrink-0" /> : 
-               statusMessage.type === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : 
-               <LocateFixed className="w-5 h-5 shrink-0 animate-pulse" />}
-              <span>{statusMessage.text}</span>
-            </div>
-          )}
-
-
           <div className="space-y-4">
             {/* Nama */}
             <div>
