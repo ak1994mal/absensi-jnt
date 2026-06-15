@@ -41,7 +41,7 @@ export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2
 
 
 type StatusAbsen = "DATANG" | "PULANG" | "IZIN";
-type PosisiPegawai = "Admin" | "Pickup" | "";
+type PosisiPegawai = "Admin" | "Admin (Training)" | "Pickup" | "";
 
 
 export default function App() {
@@ -65,6 +65,7 @@ export default function App() {
   const [imageBase64, setImageBase64] = useState("");
   const [loadingSubmit, setLoadingSubmit] = useState(false);
   const [buktiFeishuBase64, setBuktiFeishuBase64] = useState("");
+  const [isFeishuOpen, setIsFeishuOpen] = useState(false);
 
 
   const [riwayat, setRiwayat] = useState<any[]>([]);
@@ -221,7 +222,7 @@ export default function App() {
     const totalMinutes = hours * 60 + minutes;
 
 
-    if (posisi === "Admin") {
+    if (posisi === "Admin" || posisi === "Admin (Training)") {
       return totalMinutes > 510; // > 08:30 (8 * 60 + 30)
     } else if (posisi === "Pickup") {
       return totalMinutes >= 780; // >= 13:00 (13 * 60)
@@ -739,6 +740,9 @@ export default function App() {
           setTimeout(() => {
             setLoadingSubmit(false);
             toast.success(`✅ Berhasil Absen (Mode Preview). Payload GPS: ${userLat}, ${userLng}`);
+            setImageBase64("");
+            setBuktiFeishuBase64("");
+            setIsFeishuOpen(false);
             fetchRiwayat(nama);
             setTimeout(() => {
               document.getElementById('riwayat-absen')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -770,6 +774,7 @@ export default function App() {
             toast.success(result.message);
             setImageBase64(""); // reset photo
             setBuktiFeishuBase64("");
+            setIsFeishuOpen(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
             if (feishuImageInputRef.current) feishuImageInputRef.current.value = '';
             fetchRiwayat(nama);
@@ -850,8 +855,10 @@ export default function App() {
 
   // Logika tampilan Iframe form Feishu
   const showFeishu = () => {
-    const isAdminPasirJaha = (outlet === "YZ_ MDP PASIR JAHA BALARAJA" && posisi === "Admin");
-    const isAdminJayanti = (outlet === "YZ_ MDP JAYANTI CIKANDE" && posisi === "Admin");
+    if (posisi !== "Admin") return false;
+
+    const isAdminPasirJaha = outlet.toUpperCase().includes("PASIR JAHA") || outlet === "YZ_ MDP PASIR JAHA BALARAJA";
+    const isAdminJayanti = outlet.toUpperCase().includes("JAYANTI") || outlet === "YZ_ MDP JAYANTI CIKANDE";
     
     if (keterangan !== "IZIN" && (isAdminPasirJaha || isAdminJayanti)) {
       if (keterangan === "PULANG") {
@@ -972,6 +979,7 @@ export default function App() {
               >
                 <option value="" disabled>Pilih Posisi</option>
                 <option value="Admin">Admin</option>
+                <option value="Admin (Training)">Admin (Training)</option>
                 <option value="Pickup">Pickup</option>
               </select>
             </div>
@@ -1116,16 +1124,42 @@ export default function App() {
               </div>
               
               <div className="p-4 w-full flex flex-col items-center gap-3 border-b border-neutral-200">
-                <p className="text-sm text-neutral-600 text-center">Form Feishu akan terbuka di tab baru. Setelah diisi, ambil screenshot dan upload di sini.</p>
-                <a 
-                  href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
-                  className="bg-blue-600 text-white px-5 py-2.5 rounded shadow hover:bg-blue-700 transition font-semibold text-sm inline-flex items-center gap-2"
-                >
-                  <ClipboardList className="w-4 h-4" />
-                  Buka Form Feishu (Tab Baru)
-                </a>
+                {!isFeishuOpen ? (
+                  <>
+                    <p className="text-sm text-neutral-600 text-center">Form Feishu akan terbuka di tab baru. Setelah diisi, ambil screenshot dan upload di sini.</p>
+                    <a 
+                      href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      onClick={() => setIsFeishuOpen(true)}
+                      className="bg-blue-600 text-white px-5 py-3 w-full max-w-xs rounded shadow justify-center hover:bg-blue-700 transition font-semibold text-sm inline-flex items-center gap-2"
+                    >
+                      <ClipboardList className="w-5 h-5" />
+                      Buka Form Feishu
+                    </a>
+                  </>
+                ) : (
+                  <div className="w-full flex flex-col items-center gap-4 bg-blue-50 p-4 rounded-md border border-blue-100">
+                    <p className="text-sm text-blue-800 text-center font-medium">Bila sudah mengisi form, silakan upload screenshot bukti di bawah.</p>
+                    <button 
+                      onClick={() => {
+                        setIsFeishuOpen(false);
+                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                      }}
+                      className="bg-[#cc0000] text-white hover:bg-[#a30000] px-5 py-3 rounded shadow transition font-bold text-sm flex justify-center items-center gap-2 w-full max-w-xs"
+                    >
+                      Kembali ke Halaman Absen
+                    </button>
+                    <a 
+                      href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 hover:text-blue-800 font-medium underline"
+                    >
+                      Buka ulang form Feishu
+                    </a>
+                  </div>
+                )}
               </div>
 
 
@@ -1610,6 +1644,7 @@ export default function App() {
                        >
                          <option value="Semua">Semua Posisi</option>
                          <option value="Admin">Admin</option>
+                         <option value="Admin (Training)">Admin (Training)</option>
                          <option value="Pickup">Pickup</option>
                        </select>
                        <input 
