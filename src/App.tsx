@@ -883,8 +883,11 @@ export default function App() {
             
             {/* Header */}
             <div className="bg-[#cc0000] p-4 text-center">
-          <h1 className="text-xl font-bold text-white tracking-wide">ABSENSI J&T</h1>
-        </div>
+              {settingsData?.favicon && (
+                <img src={settingsData.favicon} alt="Logo" className="w-12 h-12 mx-auto mb-2 bg-white rounded-xl p-1 shadow-sm object-contain" />
+              )}
+              <h1 className="text-xl font-bold text-white tracking-wide">ABSENSI J&T</h1>
+            </div>
 
 
         {/* Formulir */}
@@ -1191,6 +1194,9 @@ export default function App() {
       {activeTab === 'owner' && (
         <div className="w-full max-w-3xl bg-white rounded-xl shadow-lg border border-neutral-200 overflow-hidden animate-in fade-in">
           <div className="bg-[#cc0000] p-4 text-center relative">
+            {settingsData?.favicon && (
+              <img src={settingsData.favicon} alt="Logo" className="w-12 h-12 mx-auto mb-2 bg-white rounded-xl p-1 shadow-sm object-contain" />
+            )}
             <h1 className="text-xl font-bold text-white tracking-wide flex justify-center items-center gap-2">
               <Users className="w-6 h-6" />
               Halaman OWNER
