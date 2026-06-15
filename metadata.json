@@ -1,0 +1,6 @@
+{
+  "name": "Absensi J&T",
+  "description": "Aplikasi Absensi Internal J&T",
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
