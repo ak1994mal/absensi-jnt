@@ -445,13 +445,23 @@ function getLaporanBulanan(bulan) {
       if (statMasuk === "TELAT") {
         sts.jumlahTelat += 1;
       }
-      if (statPulang === "LEMBUR") {
-        sts.jumlahJamLembur += 1; 
-      }
       if (totJam && totJam !== "-") {
         const parts = totJam.toString().match(/(\d+)j (\d+)m/);
         if (parts && parts.length === 3) {
-          sts.totalMenitKerja += (parseInt(parts[1]) * 60) + parseInt(parts[2]);
+          const rH = parseInt(parts[1]);
+          const rM = parseInt(parts[2]);
+          sts.totalMenitKerja += (rH * 60) + rM;
+
+          // Perhitungan lembur baru:
+          // Lembur dimulai 13 jam kerja, dan bertambah 1 jam untuk setiap jam kerja di atas 12.
+          // Contoh: 
+          // - 12 jam 45 menit = 0 jam lembur (karena < 13 jam)
+          // - 13 jam 45 menit = 1 jam lembur (13 - 12)
+          // - 14 jam 45 menit = 2 jam lembur (14 - 12)
+          // - 12 jam 25 menit = 0 jam lembur (karena < 13 jam)
+          if (rH >= 13) {
+            sts.jumlahJamLembur += (rH - 12);
+          }
         }
       }
     }
