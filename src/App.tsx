@@ -140,9 +140,27 @@ export default function App() {
   const [errorRiwayat, setErrorRiwayat] = useState("");
   const [errorRingkasan, setErrorRingkasan] = useState("");
   const [errorLaporan, setErrorLaporan] = useState("");
-  const [settingsData, setSettingsData] = useState<any>(null);
+  const [settingsData, setSettingsData] = useState<any>(() => {
+    try {
+      const saved = localStorage.getItem("settingsData_offline");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return {
+      requireLocation: true,
+      outlets: [
+        { nama: "YZ_ MDP PASIR JAHA BALARAJA", lat: -6.205649180689262, lng: 106.45134398119775, radius: 150 },
+        { nama: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727, radius: 150 }
+      ]
+    };
+  });
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [errorSettings, setErrorSettings] = useState("");
+  const [faviconError, setFaviconError] = useState(false);
 
   const fetchWithRetry = async (url: string, options?: RequestInit, retries = 2): Promise<Response> => {
     let lastErr: any;
@@ -209,8 +227,27 @@ export default function App() {
     }
   }, []);
 
+  // Update favicon and reset error state when favicon config changes
+  useEffect(() => {
+    setFaviconError(false);
+    if (settingsData?.favicon) {
+      let link = document.querySelector("link[id='dynamic-favicon']") as HTMLLinkElement || document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+      if (!link) {
+        link = document.createElement('link');
+        link.id = 'dynamic-favicon';
+        link.rel = 'icon';
+        document.getElementsByTagName('head')[0].appendChild(link);
+      }
+      link.href = settingsData.favicon;
+    }
+  }, [settingsData?.favicon]);
+
   useEffect(() => {
     if (!('Notification' in window) || !('geolocation' in navigator)) return;
+
+    const rawReq = settingsData?.requireLocation;
+    const requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+    if (!requireLocation) return;
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -248,7 +285,7 @@ export default function App() {
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [absenHariIni, settingsData?.outlets]);
+  }, [absenHariIni, settingsData?.outlets, settingsData?.requireLocation]);
 
 
   const getSisaWaktuKerja = (jamDatangStr: string, targetJam: number) => {
@@ -534,13 +571,24 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
 
   const toggleLocationTracking = async () => {
-    const newStatus = settingsData?.requireLocation === false ? true : false;
+    const rawReq = settingsData?.requireLocation;
+    const currentIsRequired = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+    const newStatus = !currentIsRequired;
     
-    // Update locally first for instant feedback
-    setSettingsData((prev: any) => ({
-        ...prev,
-        requireLocation: newStatus
-    }));
+    // Update locally first for instant feedback (persisting to localStorage)
+    const updatedSettings = {
+      ...settingsData,
+      requireLocation: newStatus
+    };
+    setSettingsData(updatedSettings);
+    try {
+      localStorage.setItem("settingsData_offline", JSON.stringify(updatedSettings));
+    } catch (e) {}
+
+    if (!GAS_URL) {
+      toast.success("Pengaturan lokasi berhasil diperbarui (Mode Preview).");
+      return;
+    }
 
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan pengaturan...");
@@ -567,11 +615,24 @@ export default function App() {
   };
 
   const handleUpdateOutlets = async (updatedOutlets: any[]) => {
-    // Update locally first for instant feedback
-    setSettingsData((prev: any) => ({
-        ...prev,
-        outlets: updatedOutlets
-    }));
+    const rawReq = settingsData?.requireLocation;
+    const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+
+    // Update locally first for instant feedback (persisting to localStorage)
+    const updatedSettings = {
+      ...settingsData,
+      requireLocation: isCurrentlyReq,
+      outlets: updatedOutlets
+    };
+    setSettingsData(updatedSettings);
+    try {
+      localStorage.setItem("settingsData_offline", JSON.stringify(updatedSettings));
+    } catch (e) {}
+
+    if (!GAS_URL) {
+      toast.success("Koordinat outlet berhasil disimpan (Mode Preview).");
+      return;
+    }
 
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan koordinat outlet...");
@@ -579,7 +640,7 @@ export default function App() {
       const payload = {
         action: 'saveSettings',
         data: { 
-          requireLocation: settingsData?.requireLocation !== false,
+          requireLocation: isCurrentlyReq,
           outlets: updatedOutlets 
         }
       };
@@ -614,15 +675,21 @@ export default function App() {
       console.log(`[fetchSettings] Response raw text:`, textData);
       let data = JSON.parse(textData);
       if (data.status === 'success') {
-        setSettingsData(data.data);
-        if (data.data.favicon) {
+        const d = data.data || {};
+        const rawReq = d.requireLocation;
+        d.requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+        setSettingsData(d);
+        try {
+          localStorage.setItem("settingsData_offline", JSON.stringify(d));
+        } catch (e) {}
+        if (d.favicon) {
           let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
           if (!link) {
             link = document.createElement('link');
             link.rel = 'icon';
             document.getElementsByTagName('head')[0].appendChild(link);
           }
-          link.href = data.data.favicon;
+          link.href = d.favicon;
         }
       } else {
         throw new Error(data.message || 'Unknown error fetching settings');
@@ -825,11 +892,6 @@ export default function App() {
     }
 
 
-    if (showFeishu() && !buktiFeishuBase64) {
-      return toast.error("Harap upload screenshot bukti mengisi Form Pusat (Feishu) terlebih dahulu!");
-    }
-
-
     setLoadingSubmit(true);
     toast.info("Memproses data absen...");
 
@@ -848,7 +910,7 @@ export default function App() {
             lat: userLat,
             lng: userLng,
             image: imageBase64, // Always send image, either selfie or doctor note
-            buktiFeishu: showFeishu() ? buktiFeishuBase64 : ""
+            buktiFeishu: ""
           }
         };
 
@@ -911,7 +973,8 @@ export default function App() {
         }
     };
 
-    const requireLocation = settingsData?.requireLocation !== undefined ? settingsData.requireLocation : true;
+    const rawReq = settingsData?.requireLocation;
+    const requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
 
     if (keterangan === 'IZIN' || !requireLocation) {
       sendPayload(0, 0); // Skip GPS requirement for IZIN or if location tracking is disabled
@@ -1239,7 +1302,7 @@ export default function App() {
             <div className="w-full mt-6 flex flex-col items-center animate-in fade-in slide-in-from-bottom-4 duration-500 border border-neutral-200 rounded-lg overflow-hidden shadow-sm bg-white">
               <div className="w-full text-center font-bold bg-[#ffcc00] text-amber-900 py-2.5 text-sm flex items-center justify-center gap-2">
                 <ClipboardList className="w-4 h-4" />
-                WAJIB ISI FORM PUSAT & UPLOAD BUKTI
+                WAJIB ISI FORM PUSAT (FEISHU)
               </div>
               
               <div className="w-full h-[550px] border-b border-neutral-200 bg-neutral-50">
@@ -1251,44 +1314,10 @@ export default function App() {
                 />
               </div>
               
-              <div className="p-4 w-full flex flex-col items-center gap-3 border-b border-neutral-200">
-                <p className="text-sm text-neutral-600 text-center font-medium">
-                  Silakan isi form Feishu di atas langsung pada frame ini. Setelah selesai, ambil screenshot bukti pengisian dan upload di bawah.
+              <div className="p-4 w-full flex flex-col items-center gap-3 bg-neutral-50">
+                <p className="text-xs text-neutral-600 text-center font-medium">
+                  Silakan isi form Feishu di atas langsung pada frame ini. Setelah selesai mengisi form, klik tombol <strong>"Kirim Absensi"</strong> di bawah untuk menyelesaikan proses pencatatan absen di sistem internal.
                 </p>
-              </div>
-
-
-              <div className="p-5 w-full bg-neutral-50">
-                <label className="block text-sm font-semibold text-neutral-700 mb-3 text-center">Upload Bukti Screenshot Absen Feishu</label>
-                
-                {buktiFeishuBase64 ? (
-                  <div className="relative group rounded-md overflow-hidden bg-black max-w-[250px] mx-auto border border-neutral-300 shadow-sm">
-                    <img src={buktiFeishuBase64} alt="Bukti Feishu" className="w-full h-auto object-contain max-h-[250px] mx-auto bg-white" />
-                    <button 
-                      onClick={() => { setBuktiFeishuBase64(""); if (feishuImageInputRef.current) feishuImageInputRef.current.value = ""; }}
-                      className="absolute top-2 right-2 bg-red-600 text-white rounded-full p-1.5 shadow-lg flex items-center justify-center opacity-90 hover:opacity-100 transition"
-                      title="Hapus Bukti"
-                    >
-                      <AlertCircle className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <div 
-                    className="cursor-pointer max-w-[250px] mx-auto flex flex-col items-center justify-center py-5 px-4 bg-white border-2 border-dashed border-neutral-300 rounded shadow-sm hover:bg-neutral-50 transition"
-                    onClick={() => feishuImageInputRef.current?.click()}
-                  >
-                    <FileImage className="w-8 h-8 text-neutral-400 mb-2" />
-                    <span className="text-sm font-medium text-neutral-600">Pilih Screenshot</span>
-                  </div>
-                )}
-                
-                <input 
-                  ref={feishuImageInputRef}
-                  type="file" 
-                  accept="image/*" 
-                  onChange={handleBuktiFeishu}
-                  className="hidden" 
-                />
               </div>
             </div>
           )}
@@ -1327,7 +1356,22 @@ export default function App() {
           </div>
           <div className="p-0 overflow-x-auto">
             {loadingRiwayat ? (
-              <div className="text-center text-sm text-neutral-500 py-6">Memuat riwayat...</div>
+              <div className="w-full p-4 animate-pulse flex flex-col gap-3">
+                <div className="grid grid-cols-4 gap-4 pb-2 border-b border-neutral-150">
+                  <div className="h-4 bg-neutral-200 rounded col-span-1"></div>
+                  <div className="h-4 bg-neutral-200 rounded col-span-1"></div>
+                  <div className="h-4 bg-neutral-200 rounded col-span-1"></div>
+                  <div className="h-4 bg-neutral-200 rounded col-span-1"></div>
+                </div>
+                {[1, 2, 3, 4, 5].map((idx) => (
+                  <div key={idx} className="grid grid-cols-4 gap-4 py-1.5 border-b border-neutral-100 last:border-0 items-center">
+                    <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
+                    <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
+                    <div className="h-5 bg-neutral-100 rounded col-span-1 w-16"></div>
+                    <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
+                  </div>
+                ))}
+              </div>
             ) : errorRiwayat ? (
               <div className="text-center p-4">
                 <div className="bg-red-50 text-red-700 text-sm p-3 rounded mb-3 font-medium border border-red-200">
@@ -1450,13 +1494,6 @@ export default function App() {
                   <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
                     <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Hari Ini</h2>
                     <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex items-center gap-2 bg-neutral-50 px-3 py-1.5 rounded-lg border border-neutral-200">
-                         <label className="text-xs font-bold text-neutral-600">Target Kerja:</label>
-                         <div className="flex items-center gap-1">
-                           <input type="number" min="1" max="24" value={targetJamKerja} onChange={(e) => setTargetJamKerja(Number(e.target.value))} className="w-12 p-1 text-sm bg-white border border-neutral-300 rounded focus:ring-1 focus:ring-[#cc0000] outline-none text-center font-bold" />
-                           <span className="text-xs font-bold text-neutral-500">Jam</span>
-                         </div>
-                      </div>
                       <button 
                         onClick={fetchRingkasanHarian} 
                         className="text-sm bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-medium px-4 py-2 rounded-lg transition h-[36px]"
@@ -1495,7 +1532,49 @@ export default function App() {
 
                   <div className="w-full">
               {loadingRingkasan ? (
-                <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat data hari ini...</div>
+                <div className="w-full flex flex-col gap-6 animate-pulse">
+                  {/* Cards Loader */}
+                  <div className="grid grid-cols-3 gap-3">
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="bg-neutral-50 border border-neutral-200 p-4 rounded-xl flex flex-col items-center gap-2">
+                        <div className="h-3 bg-neutral-200 rounded w-16"></div>
+                        <div className="h-6 bg-neutral-300 rounded w-8"></div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Table Loader */}
+                  <div className="border border-neutral-200 rounded-lg overflow-hidden bg-white">
+                    <div className="bg-neutral-50 px-5 py-4 border-b border-neutral-200 grid grid-cols-4 md:grid-cols-6 gap-4">
+                      <div className="h-4 bg-neutral-250 rounded col-span-1"></div>
+                      <div className="h-4 bg-neutral-250 rounded col-span-1"></div>
+                      <div className="h-4 bg-neutral-250 rounded col-span-1 select-none hidden md:block"></div>
+                      <div className="h-4 bg-neutral-250 rounded col-span-1"></div>
+                      <div className="h-4 bg-neutral-250 rounded col-span-1 select-none hidden md:block"></div>
+                      <div className="h-4 bg-neutral-250 rounded col-span-1"></div>
+                    </div>
+                    {[1, 2, 3].map((idx) => (
+                      <div key={idx} className="p-5 border-b border-neutral-100 last:border-0 grid grid-cols-4 md:grid-cols-6 gap-4 items-start">
+                        <div className="flex flex-col gap-2 col-span-1">
+                          <div className="h-4 bg-neutral-150 rounded w-20 md:w-28"></div>
+                          <div className="h-3 bg-neutral-100 rounded w-12 md:w-16"></div>
+                          <div className="h-3 bg-neutral-100 rounded w-24 md:w-32"></div>
+                        </div>
+                        <div className="flex flex-col gap-2 col-span-1">
+                          <div className="h-4 bg-neutral-150 rounded w-12"></div>
+                          <div className="h-4 bg-neutral-100 rounded w-16"></div>
+                        </div>
+                        <div className="h-4 bg-neutral-100 rounded w-10 col-span-1 hidden md:block"></div>
+                        <div className="h-4 bg-neutral-150 rounded w-14 col-span-1"></div>
+                        <div className="flex justify-center items-center col-span-1 hidden md:flex">
+                          <div className="w-10 h-10 bg-neutral-100 rounded-md"></div>
+                        </div>
+                        <div className="flex justify-center items-center col-span-1">
+                          <div className="w-14 h-10 bg-neutral-100 rounded-md"></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ) : ringkasanHarian.length === 0 ? (
                 <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada absensi hari ini.</div>
               ) : (
@@ -1888,10 +1967,18 @@ export default function App() {
                       <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm w-full md:max-w-[280px] gap-4 shrink-0 md:sticky md:top-4">
                         <div className="flex flex-col items-center text-center gap-2">
                           <span className="text-[10px] font-bold text-neutral-400 tracking-wider uppercase">Logo / Favicon</span>
-                          {settingsData.favicon ? (
-                            <img src={settingsData.favicon} alt="Favicon" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-50 border p-2" />
+                          {settingsData.favicon && !faviconError ? (
+                            <img 
+                              src={settingsData.favicon} 
+                              alt="Favicon" 
+                              referrerPolicy="no-referrer"
+                              onError={() => setFaviconError(true)}
+                              className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-50 border p-2" 
+                            />
                           ) : (
-                            <div className="w-16 h-16 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-400 font-bold border text-sm">N/A</div>
+                            <div className="w-16 h-16 rounded-full bg-[#cc0000] flex flex-col items-center justify-center text-white font-extrabold border-2 border-white shadow-md text-xs select-none">
+                              <span>J&T</span>
+                            </div>
                           )}
                           <p className="text-[10px] text-neutral-500 font-mono break-all line-clamp-2 max-w-[200px]" title={settingsData.favicon}>{settingsData.favicon || 'Standard J&T Icon'}</p>
                         </div>
@@ -1903,31 +1990,21 @@ export default function App() {
                             <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS</p>
                             <p className="text-[10px] text-neutral-400 leading-tight">Pegawai harus absen radius outlet</p>
                           </div>
-                          <button 
+                           <button 
                             onClick={toggleLocationTracking}
                             disabled={savingSettings}
                             type="button"
                             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-                              (settingsData.requireLocation !== false) ? 'bg-[#cc0000]' : 'bg-neutral-300'
+                              settingsData.requireLocation ? 'bg-[#cc0000]' : 'bg-neutral-300'
                             }`}
                           >
                             <span 
                               className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                (settingsData.requireLocation !== false) ? 'translate-x-6' : 'translate-x-1'
+                                settingsData.requireLocation ? 'translate-x-6' : 'translate-x-1'
                               }`}
                             />
                           </button>
                         </div>
-
-                        <div className="w-full h-px bg-neutral-100"></div>
-
-                        <button 
-                          onClick={fetchSettings} 
-                          type="button"
-                          className="w-full text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 py-2 rounded-lg transition"
-                        >
-                          Muat Ulang Settings
-                        </button>
                       </div>
 
                       {/* Right Panel: Interactive Outlet Map & Radius Editor */}
