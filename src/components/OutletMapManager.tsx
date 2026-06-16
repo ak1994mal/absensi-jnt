@@ -166,90 +166,97 @@ export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlet
   const mapCenter = { lat: currentOutlet.lat, lng: currentOutlet.lng };
 
   return (
-    <div className="w-full bg-white border border-neutral-200 rounded-xl shadow-sm p-5 flex flex-col gap-6 mt-4">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
+    <div className="w-full bg-white border border-neutral-200 rounded-xl shadow-sm p-6 flex flex-col gap-6">
+      {/* Header section with Action Title and Save Button */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
         <div>
           <h3 className="font-bold text-neutral-800 text-base flex items-center gap-2">
             <Layers className="w-5 h-5 text-[#cc0000]" />
             Atur Koordinat Titik Lokasi Outlet
           </h3>
           <p className="text-xs text-neutral-500 mt-1">
-            Ubah koordinat GPS outlet agar keakuratan deteksi absen presisi. Tarik marker di peta atau ketik nilai koordinat.
+            Ubah koordinat GPS outlet agar keakuratan deteksi absen presisi. Tarik marker di peta atau klik peta langsung.
           </p>
         </div>
         <button
           onClick={handleSave}
           disabled={saving || localOutlets.length === 0}
-          className="bg-[#cc0000] hover:bg-[#a30000] text-white font-bold text-sm px-4 py-2.5 rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-55 cursor-pointer"
+          className="bg-[#cc0000] hover:bg-[#a30000] text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-50 cursor-pointer w-full sm:w-auto shrink-0 uppercase tracking-wider"
         >
           <Save className="w-4 h-4" />
-          {saving ? 'Menyimpan...' : 'Simpan Semua Koordinat'}
+          {saving ? 'Menyimpan...' : 'Simpan Koordinat'}
         </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT COLUMN: Editor and selection */}
-        <div className="lg:col-span-5 flex flex-col gap-4">
+        {/* LEFT COLUMN: List selection and detail coordinates input */}
+        <div className="lg:col-span-5 flex flex-col gap-5">
           <div>
-            <label className="block text-xs font-bold text-neutral-600 uppercase mb-2">Pilih Outlet Yang Diatur</label>
+            <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-2.5">Pilih Outlet</label>
             <div className="flex flex-col gap-2">
               {localOutlets.map((out, idx) => (
                 <button
                   key={idx}
                   onClick={() => setSelectedIndex(idx)}
-                  className={`p-3 rounded-lg border text-left flex items-center justify-between transition ${
+                  className={`p-3 rounded-lg border text-left flex flex-col gap-1.5 transition ${
                     idx === selectedIndex
-                      ? 'border-[#cc0000] bg-red-50 text-[#cc0000] font-bold shadow-sm'
+                      ? 'border-[#cc0000] bg-red-50/75 text-[#cc0000] font-bold shadow-sm'
                       : 'border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-700'
                   }`}
                 >
-                  <div className="flex items-center gap-2 max-w-[85%]">
-                    <MapPin className={`w-4 h-4 shrink-0 ${idx === selectedIndex ? 'text-[#cc0000]' : 'text-neutral-400'}`} />
-                    <span className="text-xs truncate">{out.nama}</span>
+                  <div className="flex items-start gap-2 max-w-full">
+                    <MapPin className={`w-4 h-4 shrink-0 mt-0.5 ${idx === selectedIndex ? 'text-[#cc0000]' : 'text-neutral-400'}`} />
+                    <span className="text-xs font-bold leading-normal break-words">{out.nama}</span>
                   </div>
-                  <span className="font-mono text-[10px] bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-600">
-                    r: {out.radius}m
-                  </span>
+                  <div className="flex items-center gap-2 pl-6">
+                    <span className="font-mono text-[9px] bg-neutral-100 border border-neutral-200 px-1 py-0.5 rounded text-neutral-600">
+                      Radius: {out.radius}m
+                    </span>
+                    <span className="font-mono text-[9px] text-neutral-400">
+                      LatLng: {out.lat.toFixed(5)}, {out.lng.toFixed(5)}
+                    </span>
+                  </div>
                 </button>
               ))}
             </div>
           </div>
 
           {localOutlets.length > 0 && (
-            <div className="bg-neutral-50 p-4 rounded-xl border border-neutral-200 flex flex-col gap-3.5">
-              <div className="border-b border-neutral-200/60 pb-2">
-                <span className="font-bold text-xs text-neutral-800">Detail Koordinat:</span>
-                <p className="text-[11px] text-neutral-500 font-medium truncate mt-0.5">{currentOutlet.nama}</p>
+            <div className="bg-neutral-50/60 p-5 rounded-xl border border-neutral-150 flex flex-col gap-4">
+              <div className="border-b border-neutral-200 pb-2">
+                <span className="font-bold text-xs text-neutral-400 tracking-wider uppercase">Konfigurasi Nilai:</span>
+                <p className="text-xs font-bold text-neutral-700 break-words mt-1">{currentOutlet.nama}</p>
               </div>
 
-              {/* Latitude */}
-              <div>
-                <label className="block text-[11px] font-semibold text-neutral-600 mb-1">Latitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={currentOutlet.lat}
-                  onChange={(e) => handleManualInput('lat', e.target.value)}
-                  className="w-full p-2 text-xs bg-white border border-neutral-300 rounded focus:ring-1 focus:ring-red-500 focus:border-red-500 outline-none font-mono"
-                />
-              </div>
+              {/* Latitude & Longitude in side-by-side on broad cards */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-neutral-500 uppercase mb-1">Latitude</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={currentOutlet.lat}
+                    onChange={(e) => handleManualInput('lat', e.target.value)}
+                    className="w-full p-2 bg-white border border-neutral-300 rounded focus:ring-1 focus:ring-red-500 focus:border-red-500 outline-none font-mono text-xs"
+                  />
+                </div>
 
-              {/* Longitude */}
-              <div>
-                <label className="block text-[11px] font-semibold text-neutral-600 mb-1">Longitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={currentOutlet.lng}
-                  onChange={(e) => handleManualInput('lng', e.target.value)}
-                  className="w-full p-2 text-xs bg-white border border-neutral-300 rounded focus:ring-1 focus:ring-red-500 focus:border-red-500 outline-none font-mono"
-                />
+                <div>
+                  <label className="block text-[10px] font-bold text-neutral-500 uppercase mb-1">Longitude</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={currentOutlet.lng}
+                    onChange={(e) => handleManualInput('lng', e.target.value)}
+                    className="w-full p-2 bg-white border border-neutral-300 rounded focus:ring-1 focus:ring-red-500 focus:border-red-500 outline-none font-mono text-xs"
+                  />
+                </div>
               </div>
 
               {/* Radius Geofence */}
               <div>
-                <label className="block text-[11px] font-semibold text-neutral-600 mb-1">Radius Pemantauan Absen (meter)</label>
-                <div className="flex items-center gap-2">
+                <label className="block text-[10px] font-bold text-neutral-500 uppercase mb-1.5">Radius Batasan Absen (meter)</label>
+                <div className="flex items-center gap-3 bg-white p-2 border border-neutral-200 rounded-lg">
                   <input
                     type="range"
                     min="50"
@@ -257,64 +264,71 @@ export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlet
                     step="10"
                     value={currentOutlet.radius}
                     onChange={(e) => handleRadiusChange(e.target.value)}
-                    className="w-full accent-[#cc0000]"
+                    className="w-full accent-[#cc0000] cursor-pointer"
                   />
-                  <input
-                    type="number"
-                    value={currentOutlet.radius}
-                    onChange={(e) => handleRadiusChange(e.target.value)}
-                    className="w-20 p-1.5 text-xs text-center border border-neutral-300 rounded bg-white font-bold"
-                  />
+                  <div className="flex items-center gap-1 shrink-0 bg-neutral-100 border border-neutral-200 px-2 py-0.5 rounded font-bold text-xs font-mono">
+                    <input
+                      type="number"
+                      value={currentOutlet.radius}
+                      onChange={(e) => handleRadiusChange(e.target.value)}
+                      className="w-12 bg-transparent text-center border-none focus:outline-none p-0 focus:ring-0 text-xs font-bold"
+                    />
+                    <span className="text-neutral-450 text-[10px]">m</span>
+                  </div>
                 </div>
-                <p className="text-[10px] text-neutral-500 mt-1">
-                  Direkomendasikan 150 - 300 meter untuk menghindari deviasi GPS handphone pegawai.
+                <p className="text-[10px] text-neutral-400 mt-1.5 leading-relaxed">
+                  Batas default adalah 150 meter. Anda dapat memperbesar batasan radius jika GPS pegawai sering melesat jauh di lokasi.
                 </p>
               </div>
 
               <button
                 type="button"
                 onClick={useCurrentLocation}
-                className="w-full flex items-center justify-center gap-2 py-2 bg-neutral-200 hover:bg-neutral-300 active:bg-neutral-400 text-neutral-850 text-xs font-bold rounded-lg transition"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-neutral-200 hover:bg-neutral-300 active:bg-neutral-400 text-neutral-800 text-xs font-bold rounded-lg transition"
               >
                 <LocateFixed className="w-3.5 h-3.5 text-neutral-700" />
-                Gunakan GPS Posisi Saya Sekarang
+                Gunakan Koordinat GPS Saya Sekarang
               </button>
             </div>
           )}
         </div>
 
-        {/* RIGHT COLUMN: Interactive Map Component */}
+        {/* RIGHT COLUMN: Interactive Google Maps Component or Elegant Key Missing Box */}
         <div className="lg:col-span-7 flex flex-col gap-2">
           {!hasValidMapsKey ? (
-            <div className="w-full h-[380px] md:h-[450px] bg-neutral-100 rounded-xl border border-neutral-200/80 p-6 flex flex-col items-center justify-center text-center">
-              <div className="bg-yellow-50 border border-yellow-200 text-yellow-850 p-4 rounded-xl max-w-lg shadow-sm">
-                <div className="flex justify-center mb-1">
-                  <AlertCircle className="w-8 h-8 text-yellow-600" />
+            <div className="w-full h-[450px] bg-neutral-50 rounded-xl border border-neutral-200 p-6 flex flex-col items-center justify-center text-center">
+              <div className="bg-[#fffdf5] border border-amber-200 text-amber-900 p-5 rounded-xl max-w-lg shadow-sm flex flex-col gap-3">
+                <div className="flex justify-center">
+                  <span className="p-2.5 bg-amber-50 rounded-full border border-amber-200 text-amber-600">
+                    <AlertCircle className="w-6 h-6" />
+                  </span>
                 </div>
-                <h4 className="font-bold text-sm text-yellow-900 mb-2">Google Maps Key Belum Terpasang</h4>
-                <p className="text-xs text-yellow-800 leading-relaxed mb-4">
-                  Anda tetap bisa merubah titik menggunakan input angka koordinat di samping. Untuk mengaktifkan peta interaktif (tarik & klik pin), silakan pasang API Key di AI Studio.
-                </p>
+                <div>
+                  <h4 className="font-bold text-sm text-amber-900">Google Maps Key Belum Terpasang</h4>
+                  <p className="text-xs text-neutral-600 leading-relaxed mt-2">
+                    Anda tetap bisa mengatur koordinat outlet menggunakan kolom angka Latitude / Longitude di samping atau klik tombol dapatkan GPS. Untuk mengaktifkan visual peta interaktif, pasang API Key Anda di AI Studio.
+                  </p>
+                </div>
                 
-                <div className="text-left bg-white/70 p-3 rounded border border-yellow-300 inline-block w-full text-xs">
-                  <p className="font-bold mb-1">Cara menambahkan API Key:</p>
-                  <ol className="list-decimal pl-4 space-y-1 font-medium text-neutral-700">
-                    <li>Dapatkan API Key dari Console GCP Google Maps.</li>
-                    <li>Klik tombol <strong>Settings</strong> (ikon ⚙️ gerigi di pojok kanan atas layar Anda).</li>
-                    <li>Pilih menu <strong>Secrets</strong>.</li>
-                    <li>Masukkan nama rahasia: <code className="bg-neutral-105 font-mono text-[10.5px] px-1 py-0.5 rounded font-bold border border-neutral-200">GOOGLE_MAPS_PLATFORM_KEY</code></li>
-                    <li>Tempel kunci API Anda dan tekan tombol simpan / Enter.</li>
+                <div className="text-left bg-white p-4 rounded-lg border border-neutral-200 text-xs flex flex-col gap-2 shadow-inner">
+                  <p className="font-bold text-neutral-700 border-b pb-1.5">Langkah Memasang API Key di AI Studio:</p>
+                  <ol className="list-decimal pl-4 space-y-2 font-medium text-neutral-600 text-[11px] leading-relaxed">
+                    <li>Dapatkan API Key baru untuk maps Javascript di Google Cloud Console.</li>
+                    <li>Klik tombol <strong className="text-neutral-800">Settings</strong> (ikon gerigi ⚙️ di pojok kanan atas AI Studio Anda).</li>
+                    <li>Pilih tab <strong className="text-neutral-800">Secrets</strong>.</li>
+                    <li>Tambahkan rahasia dengan nama: <code className="bg-neutral-100 px-1 py-0.5 rounded font-bold border font-mono">GOOGLE_MAPS_PLATFORM_KEY</code></li>
+                    <li>Isi nilainya dengan API Key Google Maps Anda, lalu tekan simpan.</li>
                   </ol>
                 </div>
               </div>
             </div>
           ) : (
-            <div className="w-full border border-neutral-200 rounded-xl overflow-hidden shadow-inner relative bg-neutral-100">
-              <div className="absolute top-2.5 left-2.5 z-10 bg-white/95 px-2.5 py-1.5 rounded-md text-[11px] font-bold shadow-sm text-neutral-800 border border-neutral-200 flex items-center gap-1.5">
+            <div className="w-full bg-neutral-50 border border-neutral-200 rounded-xl overflow-hidden shadow-sm relative">
+              <div className="absolute top-3 left-3 z-10 bg-white/95 px-3 py-2 rounded-md text-[11px] font-bold shadow-sm text-neutral-800 border border-neutral-200 flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                Peta Interaktif: Pilih lokasi dengan mengklik peta atau menyeret marker merah.
+                Peta Aktif: Seret marker atau klik posisi lain langsung di layar peta.
               </div>
-              <div className="w-full h-[380px] md:h-[450px]">
+              <div className="w-full h-[450px]">
                 <APIProvider apiKey={GOOGLE_MAPS_API_KEY} version="weekly">
                   <Map
                     defaultCenter={mapCenter}

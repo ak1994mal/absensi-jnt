@@ -82,10 +82,19 @@ type PosisiPegawai = "Admin" | "Admin (Training)" | "Pickup" | "";
 
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'absen' | 'owner'>('absen');
-  const [isOwnerLoggedIn, setIsOwnerLoggedIn] = useState(false);
+  const [activeTab, setActiveTab] = useState<'absen' | 'owner'>(() => {
+    return (localStorage.getItem("activeTab") as 'absen' | 'owner') || 'absen';
+  });
+  const [isOwnerLoggedIn, setIsOwnerLoggedIn] = useState(() => {
+    return localStorage.getItem("isOwnerLoggedIn") === "true";
+  });
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerLoginError, setOwnerLoginError] = useState("");
+
+  // Keep activeTab persisted
+  useEffect(() => {
+    localStorage.setItem("activeTab", activeTab);
+  }, [activeTab]);
 
 
   const [daftarPegawai, setDaftarPegawai] = useState<string[]>([]);
@@ -963,6 +972,7 @@ export default function App() {
     e.preventDefault();
     if (ownerPasswordInput === "admin123") {
       setIsOwnerLoggedIn(true);
+      localStorage.setItem("isOwnerLoggedIn", "true");
       setOwnerLoginError("");
     } else {
       setOwnerLoginError("Password salah!");
@@ -1344,7 +1354,7 @@ export default function App() {
 
       {/* PANEL OWNER */}
       {activeTab === 'owner' && (
-        <div className="w-full max-w-3xl bg-white rounded-xl shadow-lg border border-neutral-200 overflow-hidden animate-in fade-in">
+        <div className={`w-full ${isOwnerLoggedIn ? 'max-w-6xl' : 'max-w-3xl'} bg-white rounded-xl shadow-lg border border-neutral-200 overflow-hidden transition-all duration-300 animate-in fade-in`}>
           <div className="bg-[#cc0000] p-4 text-center relative">
             <h1 className="text-xl font-bold text-white tracking-wide flex justify-center items-center gap-2">
               <Users className="w-6 h-6" />
@@ -1354,6 +1364,7 @@ export default function App() {
                <button
                   onClick={() => {
                     setIsOwnerLoggedIn(false);
+                    localStorage.removeItem("isOwnerLoggedIn");
                     setOwnerPasswordInput("");
                     setOwnerView('harian');
                   }}
@@ -1837,7 +1848,10 @@ export default function App() {
 
               {ownerView === 'settings' && (
                 <div className="flex flex-col gap-4 w-full">
-                  <h2 className="font-bold text-neutral-700 text-lg">Pengaturan Aplikasi</h2>
+                  <div className="border-b border-neutral-100 pb-2">
+                    <h2 className="font-bold text-neutral-800 text-lg">Pengaturan Aplikasi & Outlet</h2>
+                    <p className="text-xs text-neutral-500">Konfigurasi preferensi global dan koordinat batas wilayah (geofence) absensi.</p>
+                  </div>
                   
                   {loadingSettings ? (
                     <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat pengaturan...</div>
@@ -1849,28 +1863,31 @@ export default function App() {
                       </button>
                     </div>
                   ) : settingsData ? (
-                    <div className="flex flex-col xl:flex-row items-start gap-6 w-full">
-                      <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm w-full xl:max-w-xs gap-4 shrink-0">
-                        {settingsData.favicon ? (
-                          <>
-                            <img src={settingsData.favicon} alt="Favicon URL" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-100" />
-                            <p className="text-xs font-medium text-center text-neutral-600 break-all">{settingsData.favicon}</p>
-                          </>
-                        ) : (
-                           <p className="text-sm text-neutral-500 text-center">Tidak ada favicon yang dikonfigurasi di Google Sheets 'Settings'.</p>
-                        )}
+                    <div className="flex flex-col md:flex-row items-start gap-6 w-full">
+                      {/* Left Sidebar: App Info & Main Toggles */}
+                      <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm w-full md:max-w-[280px] gap-4 shrink-0 md:sticky md:top-4">
+                        <div className="flex flex-col items-center text-center gap-2">
+                          <span className="text-[10px] font-bold text-neutral-400 tracking-wider uppercase">Logo / Favicon</span>
+                          {settingsData.favicon ? (
+                            <img src={settingsData.favicon} alt="Favicon" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-50 border p-2" />
+                          ) : (
+                            <div className="w-16 h-16 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-400 font-bold border text-sm">N/A</div>
+                          )}
+                          <p className="text-[10px] text-neutral-500 font-mono break-all line-clamp-2 max-w-[200px]" title={settingsData.favicon}>{settingsData.favicon || 'Standard J&T Icon'}</p>
+                        </div>
                         
-                        <div className="w-full h-px bg-neutral-100 my-2"></div>
+                        <div className="w-full h-px bg-neutral-100"></div>
 
-                        <div className="w-full flex items-center justify-between">
-                          <div>
-                            <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS Absensi</p>
-                            <p className="text-xs text-neutral-500 mt-0.5">Harus absen di lokasi outlet</p>
+                        <div className="w-full flex items-center justify-between gap-2 py-1">
+                          <div className="flex-1">
+                            <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS</p>
+                            <p className="text-[10px] text-neutral-400 leading-tight">Pegawai harus absen radius outlet</p>
                           </div>
                           <button 
                             onClick={toggleLocationTracking}
                             disabled={savingSettings}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            type="button"
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
                               (settingsData.requireLocation !== false) ? 'bg-[#cc0000]' : 'bg-neutral-300'
                             }`}
                           >
@@ -1882,13 +1899,19 @@ export default function App() {
                           </button>
                         </div>
 
-                        <button onClick={fetchSettings} className="w-full text-sm font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 px-4 py-2 mt-2 rounded-lg transition">
+                        <div className="w-full h-px bg-neutral-100"></div>
+
+                        <button 
+                          onClick={fetchSettings} 
+                          type="button"
+                          className="w-full text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 py-2 rounded-lg transition"
+                        >
                           Muat Ulang Settings
                         </button>
                       </div>
 
-                      {/* Outlet Location Map & Coordinates Editor */}
-                      <div className="flex-1 w-full shrink-0">
+                      {/* Right Panel: Interactive Outlet Map & Radius Editor */}
+                      <div className="flex-1 w-full min-w-0">
                         <OutletMapManager 
                           outlets={settingsData.outlets || []}
                           onSaveOutlets={handleUpdateOutlets}
