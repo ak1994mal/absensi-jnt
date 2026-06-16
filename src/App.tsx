@@ -3,6 +3,7 @@ import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { motion, AnimatePresence } from 'motion/react';
 
 
 const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
@@ -74,6 +75,19 @@ export const formatSheetTime = (val: any): string => {
     return `${h}:${m}`;
   }
   
+  return str;
+};
+
+
+export const getDirectDriveUrl = (url: string | null | undefined): string => {
+  if (!url) return "";
+  const str = String(url).trim();
+  if (str.includes("drive.google.com") || str.includes("docs.google.com")) {
+    const match = str.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || str.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      return `https://lh3.googleusercontent.com/d/${match[1]}`;
+    }
+  }
   return str;
 };
 
@@ -1675,9 +1689,16 @@ export default function App() {
               </div>
 
 
-              {ownerView === 'harian' && (
-                <>
-                  <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
+              <AnimatePresence mode="wait">
+                {ownerView === 'harian' && (
+                  <motion.div
+                    key="owner-harian"
+                    initial={{ opacity: 0, x: 15 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -15 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
                     <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Hari Ini</h2>
                     <div className="flex flex-wrap items-center gap-3">
                       <button 
@@ -1827,13 +1848,13 @@ export default function App() {
                             <div className="flex justify-center gap-2">
                               {row.fotoDatang ? (
                                 <button type="button" onClick={() => setPreviewModal({ type: 'image', title: `Foto Masuk ${row.nama}`, url: row.fotoDatang })} className="block w-10 h-10 bg-neutral-200 rounded border border-neutral-300 overflow-hidden hover:opacity-80 transition" title="Foto Datang">
-                                  <img src={row.fotoDatang} alt="Masuk" className="w-full h-full object-cover" />
+                                  <img src={getDirectDriveUrl(row.fotoDatang)} alt="Masuk" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 </button>
                               ) : <div className="w-10 h-10 bg-neutral-100 border border-neutral-200 border-dashed rounded flex items-center justify-center text-xs text-neutral-400" title="Belum Masuk">-</div>}
                               
                               {row.fotoPulang ? (
                                 <button type="button" onClick={() => setPreviewModal({ type: 'image', title: `Foto Pulang ${row.nama}`, url: row.fotoPulang })} className="block w-10 h-10 bg-neutral-200 rounded border border-neutral-300 overflow-hidden hover:opacity-80 transition" title="Foto Pulang">
-                                  <img src={row.fotoPulang} alt="Pulang" className="w-full h-full object-cover" />
+                                  <img src={getDirectDriveUrl(row.fotoPulang)} alt="Pulang" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 </button>
                               ) : <div className="w-10 h-10 bg-neutral-100 border border-neutral-200 border-dashed rounded flex items-center justify-center text-xs text-neutral-400" title="Belum Pulang">-</div>}
                             </div>
@@ -1989,12 +2010,18 @@ export default function App() {
                 </>
               )}
                   </div>
-              </>
+                </motion.div>
               )}
 
 
               {ownerView === 'bulanan' && (
-                <>
+                <motion.div
+                  key="owner-bulanan"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <h2 className="font-bold text-neutral-700 text-lg">Laporan Absensi</h2>
                     <div className="flex flex-wrap items-center gap-2">
@@ -2189,12 +2216,19 @@ export default function App() {
                     </>
                   )}
                   </div>
-                </>
+                </motion.div>
               )}
 
 
               {ownerView === 'settings' && (
-                <div className="flex flex-col gap-4 w-full">
+                <motion.div
+                  key="owner-settings"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex flex-col gap-4 w-full"
+                >
                   <div className="border-b border-neutral-100 pb-2">
                     <h2 className="font-bold text-neutral-800 text-lg">Pengaturan Aplikasi & Outlet</h2>
                     <p className="text-xs text-neutral-500">Konfigurasi preferensi global dan koordinat batas wilayah (geofence) absensi.</p>
@@ -2267,8 +2301,9 @@ export default function App() {
                   ) : (
                      <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Tidak ada data pengaturan.</div>
                   )}
-                </div>
+                </motion.div>
               )}
+            </AnimatePresence>
             </div>
           )}
         </div>
@@ -2290,7 +2325,7 @@ export default function App() {
             </div>
             <div className="p-0 bg-neutral-100 flex items-center justify-center min-h-[300px] max-h-[75vh]">
               {previewModal.type === 'image' ? (
-                <img src={previewModal.url} alt={previewModal.title} className="max-w-full max-h-[75vh] object-contain block mx-auto" />
+                <img src={getDirectDriveUrl(previewModal.url)} alt={previewModal.title} className="max-w-full max-h-[75vh] object-contain block mx-auto" referrerPolicy="no-referrer" />
               ) : (
                 <iframe src={previewModal.url} className="w-full h-[60vh] border-0" title={previewModal.title} allowFullScreen loading="lazy" />
               )}
@@ -2306,82 +2341,97 @@ export default function App() {
 
 
       {/* Modal Detail Bulanan */}
-      {selectedPegawaiDetail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
-            {/* Header Modal */}
-            <div className="p-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50">
-              <div>
-                <h3 className="font-bold text-neutral-800 text-lg">{selectedPegawaiDetail.nama}</h3>
-                <p className="text-xs text-neutral-500 font-medium">Bulan: {selectedPegawaiDetail.bulan}</p>
+      <AnimatePresence>
+        {selectedPegawaiDetail && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-end bg-black/60 backdrop-blur-sm"
+            onClick={() => setSelectedPegawaiDetail(null)}
+          >
+            <motion.div 
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 28, stiffness: 240 }}
+              className="bg-white h-full w-full max-w-2xl shadow-2xl flex flex-col overflow-hidden md:rounded-l-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header Modal */}
+              <div className="p-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50 font-sans">
+                <div>
+                  <h3 className="font-bold text-neutral-800 text-lg">{selectedPegawaiDetail.nama}</h3>
+                  <p className="text-xs text-neutral-500 font-medium">Bulan: {selectedPegawaiDetail.bulan}</p>
+                </div>
+                <button 
+                  onClick={() => setSelectedPegawaiDetail(null)}
+                  className="p-2 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 rounded-full transition cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-              <button 
-                onClick={() => setSelectedPegawaiDetail(null)}
-                className="p-2 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 rounded-full transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
 
-            {/* Body / List Absensi */}
-            <div className="p-4 overflow-y-auto flex-1 bg-neutral-50">
-              {loadingDetail ? (
-                <div className="text-center py-12 flex flex-col justify-center items-center gap-3">
-                  <div className="w-8 h-8 rounded-full border-4 border-neutral-200 border-t-[#cc0000] animate-spin"></div>
-                  <p className="text-sm font-medium text-neutral-500">Memuat detail riwayat...</p>
-                </div>
-              ) : detailRiwayat.length === 0 ? (
-                <div className="text-center py-10 bg-white rounded-xl border border-neutral-200 shadow-sm">
-                  <p className="text-neutral-500 text-sm font-medium">Belum ada riwayat absensi di bulan ini.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {detailRiwayat.map((row, idx) => (
-                    <div key={idx} className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm hover:border-[#cc0000]/30 transition relative overflow-hidden">
-                      <div className={`absolute left-0 top-0 bottom-0 w-1 ${row.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-500' : row.statusMasuk === 'TELAT' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
-                      
-                      <div className="flex justify-between items-center border-b border-neutral-100 pb-3 pl-2">
-                        <div className="flex items-center gap-2">
-                          <div className="bg-neutral-100 px-3 py-1 rounded-md text-xs font-bold text-neutral-700">
-                            {row.tanggal}
+              {/* Body / List Absensi */}
+              <div className="p-4 overflow-y-auto flex-1 bg-neutral-50 font-sans">
+                {loadingDetail ? (
+                  <div className="text-center py-12 flex flex-col justify-center items-center gap-3">
+                    <div className="w-8 h-8 rounded-full border-4 border-neutral-200 border-t-[#cc0000] animate-spin"></div>
+                    <p className="text-sm font-medium text-neutral-500">Memuat detail riwayat...</p>
+                  </div>
+                ) : detailRiwayat.length === 0 ? (
+                  <div className="text-center py-10 bg-white rounded-xl border border-neutral-200 shadow-sm">
+                    <p className="text-neutral-500 text-sm font-medium">Belum ada riwayat absensi di bulan ini.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {detailRiwayat.map((row, idx) => (
+                      <div key={idx} className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm hover:border-[#cc0000]/30 transition relative overflow-hidden">
+                        <div className={`absolute left-0 top-0 bottom-0 w-1 ${row.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-500' : row.statusMasuk === 'TELAT' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
+                        
+                        <div className="flex justify-between items-center border-b border-neutral-100 pb-3 pl-2">
+                          <div className="flex items-center gap-2">
+                            <div className="bg-neutral-100 px-3 py-1 rounded-md text-xs font-bold text-neutral-700">
+                              {row.tanggal}
+                            </div>
+                          </div>
+                          <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold ${row.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-100 text-green-700' : row.statusMasuk === 'TELAT' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                            {row.statusMasuk || row.keterangan || "-"}
+                          </span>
+                        </div>
+
+
+                        <div className="grid grid-cols-2 gap-3 pl-2">
+                          <div className="flex flex-col gap-1">
+                            <p className="text-[10px] text-neutral-500 font-bold">MASUK</p>
+                            <p className="font-mono font-bold text-neutral-800 text-sm">{row.jamDatang || "-"}</p>
+                            {(row.statusMasuk === 'TELAT' || row.keterangan === 'IZIN') && row.alasan && (
+                              <p className="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded italic mt-1 leading-tight border border-red-100">
+                                "{row.alasan}"
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-1 items-end text-right">
+                            <p className="text-[10px] text-neutral-500 font-bold flex gap-1 items-center">
+                              {row.statusPulang && row.statusPulang !== "-" && (
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${row.statusPulang === 'NORMAL' ? 'bg-green-100 text-green-700' : row.statusPulang === 'LEMBUR' ? 'bg-purple-100 text-purple-700' : 'bg-neutral-100 text-neutral-700'}`}>{row.statusPulang}</span>
+                              )}
+                              PULANG
+                            </p>
+                            <p className="font-mono font-bold text-neutral-800 text-sm">{row.jamPulang && row.jamPulang !== "-" ? row.jamPulang : "-"}</p>
+                            <p className="text-[10px] text-neutral-500 font-semibold mt-1">Durasi: {row.totalJam && row.totalJam !== "-" ? row.totalJam : "-"}</p>
                           </div>
                         </div>
-                        <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold ${row.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-100 text-green-700' : row.statusMasuk === 'TELAT' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
-                          {row.statusMasuk || row.keterangan || "-"}
-                        </span>
                       </div>
-
-
-                      <div className="grid grid-cols-2 gap-3 pl-2">
-                        <div className="flex flex-col gap-1">
-                          <p className="text-[10px] text-neutral-500 font-bold">MASUK</p>
-                          <p className="font-mono font-bold text-neutral-800 text-sm">{row.jamDatang || "-"}</p>
-                          {(row.statusMasuk === 'TELAT' || row.keterangan === 'IZIN') && row.alasan && (
-                            <p className="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded italic mt-1 leading-tight border border-red-100">
-                              "{row.alasan}"
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex flex-col gap-1 items-end text-right">
-                          <p className="text-[10px] text-neutral-500 font-bold flex gap-1 items-center">
-                            {row.statusPulang && row.statusPulang !== "-" && (
-                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${row.statusPulang === 'NORMAL' ? 'bg-green-100 text-green-700' : row.statusPulang === 'LEMBUR' ? 'bg-purple-100 text-purple-700' : 'bg-neutral-100 text-neutral-700'}`}>{row.statusPulang}</span>
-                            )}
-                            PULANG
-                          </p>
-                          <p className="font-mono font-bold text-neutral-800 text-sm">{row.jamPulang && row.jamPulang !== "-" ? row.jamPulang : "-"}</p>
-                          <p className="text-[10px] text-neutral-500 font-semibold mt-1">Durasi: {row.totalJam && row.totalJam !== "-" ? row.totalJam : "-"}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Footer / Clear Cache Button */}
       <div className="mt-8 mb-4 max-w-xs w-full flex flex-col items-center gap-1.5 text-center px-4 self-center animate-in fade-in duration-300">
