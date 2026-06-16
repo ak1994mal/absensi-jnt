@@ -3,7 +3,7 @@ import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage
 import { Toaster, toast } from 'sonner';
 
 
-const GAS_URL = import.meta.env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
+const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
 
 
 const getMapEmbedUrl = (url?: string) => {
@@ -37,6 +37,42 @@ export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2
 
 
   return R * c; // Jarak dalam meter
+};
+
+
+export const formatSheetDate = (val: any): string => {
+  if (!val) return "";
+  const str = String(val).trim();
+  if (str === "-") return "-";
+  
+  if (str.includes("T") && !isNaN(Date.parse(str))) {
+    const d = new Date(str);
+    if (d.getFullYear() === 1899) {
+      return "-";
+    }
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
+  }
+  
+  return str;
+};
+
+
+export const formatSheetTime = (val: any): string => {
+  if (!val) return "-";
+  const str = String(val).trim();
+  if (str === "-") return "-";
+  
+  if (str.includes("T") && !isNaN(Date.parse(str))) {
+    const d = new Date(str);
+    const h = d.getHours().toString().padStart(2, '0');
+    const m = d.getMinutes().toString().padStart(2, '0');
+    return `${h}:${m}`;
+  }
+  
+  return str;
 };
 
 
@@ -167,7 +203,7 @@ export default function App() {
                 body: `Anda berada di sekitar ${out.name || out.nama}. Jangan lupa untuk Absen DATANG!`,
                 icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg",
                 vibrate: [200, 100, 200]
-              });
+              } as any);
             }
             break;
           }
@@ -319,7 +355,13 @@ export default function App() {
       
       if (data.status === 'success') {
         console.log(`[fetchRiwayat] Sukses mendapatkan ${data.data?.length} baris riwayat.`);
-        setRiwayat(data.data);
+        const formattedData = data.data.map((r: any) => ({
+          ...r,
+          tanggal: formatSheetDate(r.tanggal),
+          jamDatang: formatSheetTime(r.jamDatang),
+          jamPulang: formatSheetTime(r.jamPulang),
+        }));
+        setRiwayat(formattedData);
       } else {
         console.error(`[fetchRiwayat] Error dari server: ${data.message}`);
         throw new Error(data.message || 'Unknown error');
@@ -385,7 +427,13 @@ export default function App() {
       let data = JSON.parse(textData);
       if (data.status === 'success') {
         console.log(`[fetchRingkasanHarian] Berhasil mendapat ${data.data?.length} ringkasan harian.`);
-        setRingkasanHarian(data.data);
+        const formattedData = data.data.map((r: any) => ({
+          ...r,
+          tanggal: formatSheetDate(r.tanggal),
+          jamDatang: formatSheetTime(r.jamDatang),
+          jamPulang: formatSheetTime(r.jamPulang),
+        }));
+        setRingkasanHarian(formattedData);
       } else {
         console.error(`[fetchRingkasanHarian] Server Error: ${data.message}`);
         throw new Error(data.message || 'Unknown error');
@@ -545,7 +593,13 @@ export default function App() {
       const res = await fetch(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`);
       const data = await res.json();
       if (data.status === 'success') {
-        setDetailRiwayat(data.data);
+        const formattedData = data.data.map((r: any) => ({
+          ...r,
+          tanggal: formatSheetDate(r.tanggal),
+          jamDatang: formatSheetTime(r.jamDatang),
+          jamPulang: formatSheetTime(r.jamPulang),
+        }));
+        setDetailRiwayat(formattedData);
       }
     } catch (e) {
       console.error(e);
