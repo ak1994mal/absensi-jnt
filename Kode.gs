@@ -292,7 +292,27 @@ function saveSettings(data) {
   }
   
   // Set requireLocation ke B3
-  sheet.getRange("B3").setValue(data.requireLocation ? "TRUE" : "FALSE");
+  if (data.requireLocation !== undefined) {
+    sheet.getRange("B3").setValue(data.requireLocation ? "TRUE" : "FALSE");
+  }
+  
+  // Update outlets if provided
+  if (data.outlets && Array.isArray(data.outlets)) {
+    const sheetOutlet = ss.getSheetByName("DataOutlet");
+    if (sheetOutlet) {
+      const lastRow = sheetOutlet.getLastRow();
+      if (lastRow > 1) {
+        sheetOutlet.getRange(2, 1, lastRow - 1, 4).clearContent();
+      }
+      
+      data.outlets.forEach((out, idx) => {
+        sheetOutlet.getRange(idx + 2, 1).setValue(out.nama || "");
+        sheetOutlet.getRange(idx + 2, 2).setValue(Number(out.lat) || 0);
+        sheetOutlet.getRange(idx + 2, 3).setValue(Number(out.lng) || 0);
+        sheetOutlet.getRange(idx + 2, 4).setValue(Number(out.radius) || 150);
+      });
+    }
+  }
   
   return { status: "success", message: "Pengaturan berhasil disimpan" };
 }

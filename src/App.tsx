@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
+import OutletMapManager from './components/OutletMapManager';
 
 
 const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
@@ -531,6 +532,40 @@ export default function App() {
       }
     } catch (e: any) {
         toast.error(`Error menyimpan pengaturan: ${e.message}`, { id: loadingToastId });
+    } finally {
+        setSavingSettings(false);
+    }
+  };
+
+  const handleUpdateOutlets = async (updatedOutlets: any[]) => {
+    // Update locally first for instant feedback
+    setSettingsData((prev: any) => ({
+        ...prev,
+        outlets: updatedOutlets
+    }));
+
+    setSavingSettings(true);
+    const loadingToastId = toast.loading("Menyimpan koordinat outlet...");
+    try {
+      const payload = {
+        action: 'saveSettings',
+        data: { 
+          requireLocation: settingsData?.requireLocation !== false,
+          outlets: updatedOutlets 
+        }
+      };
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.status === "success") {
+        toast.success("Koordinat outlet berhasil disimpan ke Google Sheets.", { id: loadingToastId });
+      } else {
+        toast.error(`Gagal menyimpan: ${result.message}`, { id: loadingToastId });
+      }
+    } catch (e: any) {
+        toast.error(`Error menyimpan koordinat: ${e.message}`, { id: loadingToastId });
     } finally {
         setSavingSettings(false);
     }
@@ -1801,7 +1836,7 @@ export default function App() {
 
 
               {ownerView === 'settings' && (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 w-full">
                   <h2 className="font-bold text-neutral-700 text-lg">Pengaturan Aplikasi</h2>
                   
                   {loadingSettings ? (
@@ -1814,41 +1849,52 @@ export default function App() {
                       </button>
                     </div>
                   ) : settingsData ? (
-                    <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm min-w-[300px] max-w-sm gap-4">
-                      {settingsData.favicon ? (
-                        <>
-                          <img src={settingsData.favicon} alt="Favicon URL" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-100" />
-                          <p className="text-xs font-medium text-center text-neutral-600 break-all">{settingsData.favicon}</p>
-                        </>
-                      ) : (
-                         <p className="text-sm text-neutral-500 text-center">Tidak ada favicon yang dikonfigurasi di Google Sheets 'Settings'.</p>
-                      )}
-                      
-                      <div className="w-full h-px bg-neutral-100 my-2"></div>
+                    <div className="flex flex-col xl:flex-row items-start gap-6 w-full">
+                      <div className="bg-white border flex flex-col items-center border-neutral-200 rounded-xl p-6 shadow-sm w-full xl:max-w-xs gap-4 shrink-0">
+                        {settingsData.favicon ? (
+                          <>
+                            <img src={settingsData.favicon} alt="Favicon URL" className="w-16 h-16 object-contain rounded-full shadow-sm bg-neutral-100" />
+                            <p className="text-xs font-medium text-center text-neutral-600 break-all">{settingsData.favicon}</p>
+                          </>
+                        ) : (
+                           <p className="text-sm text-neutral-500 text-center">Tidak ada favicon yang dikonfigurasi di Google Sheets 'Settings'.</p>
+                        )}
+                        
+                        <div className="w-full h-px bg-neutral-100 my-2"></div>
 
-                      <div className="w-full flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS Absensi</p>
-                          <p className="text-xs text-neutral-500 mt-0.5">Harus absen di lokasi outlet</p>
-                        </div>
-                        <button 
-                          onClick={toggleLocationTracking}
-                          disabled={savingSettings}
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            (settingsData.requireLocation !== false) ? 'bg-[#cc0000]' : 'bg-neutral-300'
-                          }`}
-                        >
-                          <span 
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                              (settingsData.requireLocation !== false) ? 'translate-x-6' : 'translate-x-1'
+                        <div className="w-full flex items-center justify-between">
+                          <div>
+                            <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS Absensi</p>
+                            <p className="text-xs text-neutral-500 mt-0.5">Harus absen di lokasi outlet</p>
+                          </div>
+                          <button 
+                            onClick={toggleLocationTracking}
+                            disabled={savingSettings}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              (settingsData.requireLocation !== false) ? 'bg-[#cc0000]' : 'bg-neutral-300'
                             }`}
-                          />
+                          >
+                            <span 
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                (settingsData.requireLocation !== false) ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        <button onClick={fetchSettings} className="w-full text-sm font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 px-4 py-2 mt-2 rounded-lg transition">
+                          Muat Ulang Settings
                         </button>
                       </div>
 
-                      <button onClick={fetchSettings} className="w-full text-sm font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 px-4 py-2 mt-2 rounded-lg transition">
-                        Muat Ulang Settings
-                      </button>
+                      {/* Outlet Location Map & Coordinates Editor */}
+                      <div className="flex-1 w-full shrink-0">
+                        <OutletMapManager 
+                          outlets={settingsData.outlets || []}
+                          onSaveOutlets={handleUpdateOutlets}
+                          saving={savingSettings}
+                        />
+                      </div>
                     </div>
                   ) : (
                      <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Tidak ada data pengaturan.</div>
