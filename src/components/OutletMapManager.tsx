@@ -18,6 +18,7 @@ interface OutletMapManagerProps {
 export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlets, saving }: OutletMapManagerProps) {
   // Always work with local copy so changes won't immediately commit to global state until Saved
   const [localOutlets, setLocalOutlets] = useState<Outlet[]>([]);
+  const [savingIdx, setSavingIdx] = useState<number | null>(null);
 
   // Synchronize with initialOutlets
   useEffect(() => {
@@ -88,10 +89,13 @@ export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlet
 
   const saveSpecificOutlet = async (idxToSave: number, outletName: string) => {
     try {
+      setSavingIdx(idxToSave);
       // Pass the updated localOutlets array up to persist in Sheet
       await onSaveOutlets(localOutlets);
     } catch (err: any) {
       toast.error(`Gagal menyimpan outlet ${outletName}: ${err.message}`);
+    } finally {
+      setSavingIdx(null);
     }
   };
 
@@ -205,7 +209,7 @@ export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlet
                   className="w-full bg-[#cc0000] hover:bg-[#a30000] text-white font-bold text-xs py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition disabled:opacity-50 cursor-pointer uppercase tracking-wider select-none text-center"
                 >
                   <Save className="w-3.5 h-3.5 shrink-0" />
-                  {saving ? 'Menyimpan...' : 'Simpan Koordinat'}
+                  {saving && savingIdx === idx ? 'Menyimpan...' : 'Simpan Koordinat'}
                 </button>
               </div>
             </div>

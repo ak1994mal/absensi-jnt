@@ -81,6 +81,66 @@ type StatusAbsen = "DATANG" | "PULANG" | "IZIN";
 type PosisiPegawai = "Admin" | "Admin (Training)" | "Pickup" | "";
 
 
+const updateFavicon = (url: string) => {
+  if (!url) return;
+
+  // Add cache-busting parameter to force the browser/tab to redownload and refresh the icon
+  const separator = url.includes('?') ? '&' : '?';
+  const cleanUrl = `${url}${separator}t=${Date.now()}`;
+
+  const applyToDoc = (doc: Document) => {
+    try {
+      // Find all icon-related links and remove them to clean the head
+      const existing = doc.querySelectorAll("link[rel~='icon'], link[id='dynamic-favicon']");
+      existing.forEach(el => el.parentNode?.removeChild(el));
+
+      const head = doc.getElementsByTagName('head')[0];
+      if (!head) return;
+
+      // Create new 'shortcut icon' link
+      const shortcutLink = doc.createElement('link');
+      shortcutLink.id = 'dynamic-favicon';
+      shortcutLink.rel = 'shortcut icon';
+      shortcutLink.href = cleanUrl;
+
+      // Determine correct mime type
+      if (url.includes('.ico')) {
+        shortcutLink.type = 'image/x-icon';
+      } else if (url.includes('.png')) {
+        shortcutLink.type = 'image/png';
+      } else if (url.includes('.svg')) {
+        shortcutLink.type = 'image/svg+xml';
+      } else {
+        shortcutLink.type = 'image/x-icon';
+      }
+
+      head.appendChild(shortcutLink);
+
+      // Create and append a backup standard 'icon' link for maximum browser compatibility
+      const iconLink = doc.createElement('link');
+      iconLink.rel = 'icon';
+      iconLink.type = shortcutLink.type;
+      iconLink.href = cleanUrl;
+      head.appendChild(iconLink);
+    } catch (e) {
+      console.warn("Failed to apply favicon to document object", e);
+    }
+  };
+
+  // Apply to current document
+  applyToDoc(document);
+
+  // Safely try to apply to parent document if inside same-origin iframe
+  try {
+    if (window.parent && window.parent !== window && window.parent.document) {
+      applyToDoc(window.parent.document);
+    }
+  } catch (err) {
+    // Expected same-origin query blocks inside cross-origin context, ignore silently
+  }
+};
+
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'absen' | 'owner'>(() => {
     return (localStorage.getItem("activeTab") as 'absen' | 'owner') || 'absen';
@@ -260,14 +320,7 @@ export default function App() {
   useEffect(() => {
     setFaviconError(false);
     if (settingsData?.favicon) {
-      let link = document.querySelector("link[id='dynamic-favicon']") as HTMLLinkElement || document.querySelector("link[rel~='icon']") as HTMLLinkElement;
-      if (!link) {
-        link = document.createElement('link');
-        link.id = 'dynamic-favicon';
-        link.rel = 'icon';
-        document.getElementsByTagName('head')[0].appendChild(link);
-      }
-      link.href = settingsData.favicon;
+      updateFavicon(settingsData.favicon);
     }
   }, [settingsData?.favicon]);
 
@@ -742,13 +795,7 @@ export default function App() {
           localStorage.setItem("settingsData_offline", JSON.stringify(d));
         } catch (e) {}
         if (d.favicon) {
-          let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
-          if (!link) {
-            link = document.createElement('link');
-            link.rel = 'icon';
-            document.getElementsByTagName('head')[0].appendChild(link);
-          }
-          link.href = d.favicon;
+          updateFavicon(d.favicon);
         }
       } else {
         throw new Error(data.message || 'Unknown error fetching settings');
