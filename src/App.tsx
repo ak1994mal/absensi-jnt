@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 
 
 const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
@@ -1533,9 +1534,9 @@ export default function App() {
                 {[1, 2, 3, 4, 5].map((idx) => (
                   <div key={idx} className="grid grid-cols-4 gap-4 py-1.5 border-b border-neutral-100 last:border-0 items-center">
                     <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
-                    <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
-                    <div className="h-5 bg-neutral-100 rounded col-span-1 w-16"></div>
-                    <div className="h-3 bg-neutral-100 rounded col-span-1"></div>
+                    <div className="h-5 bg-neutral-100 rounded col-span-1 w-24"></div>
+                    <div className="h-5 bg-neutral-100 rounded col-span-1 w-24"></div>
+                    <div className="h-3 bg-neutral-100 rounded col-span-1 w-16"></div>
                   </div>
                 ))}
               </div>
@@ -1549,28 +1550,46 @@ export default function App() {
                 </button>
               </div>
             ) : riwayat.length === 0 ? (
-              <div className="text-center text-sm text-neutral-500 py-6">Belum ada riwayat absensi.</div>
+               <div className="text-center text-sm text-neutral-500 py-6">Belum ada riwayat absensi.</div>
             ) : (
-              <table className="w-full text-xs text-left whitespace-nowrap">
+              <table className="w-full text-xs text-left">
                 <thead className="text-neutral-500 uppercase bg-neutral-50/50">
                   <tr>
                     <th className="px-4 py-2.5 font-semibold">Tanggal</th>
                     <th className="px-4 py-2.5 font-semibold">Masuk</th>
-                    <th className="px-4 py-2.5 font-semibold">Status</th>
                     <th className="px-4 py-2.5 font-semibold">Pulang</th>
+                    <th className="px-4 py-2.5 font-semibold">Durasi</th>
                   </tr>
                 </thead>
                 <tbody>
                   {riwayat.map((r, i) => (
                     <tr key={i} className="border-t border-neutral-100 last:border-0 hover:bg-neutral-50">
-                      <td className="px-4 py-3">{r.tanggal}</td>
-                      <td className="px-4 py-3">{r.jamDatang}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded font-bold ${r.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-100 text-green-700' : r.statusMasuk === 'TELAT' ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-700'}`}>
-                          {r.statusMasuk}
-                        </span>
+                      <td className="px-4 py-3 align-middle font-medium text-neutral-600">{r.tanggal}</td>
+                      <td className="px-4 py-3 align-middle">
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="font-mono font-bold text-neutral-800 text-sm">{r.jamDatang || '-'}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${r.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-100 text-green-700' : r.statusMasuk === 'TELAT' ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-700'}`}>
+                            {r.statusMasuk}
+                          </span>
+                        </div>
                       </td>
-                      <td className="px-4 py-3">{r.jamPulang || '-'}</td>
+                      <td className="px-4 py-3 align-middle">
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="font-mono font-bold text-neutral-800 text-sm">{r.jamPulang && r.jamPulang !== '-' ? r.jamPulang : '-'}</span>
+                          {r.jamPulang && r.jamPulang !== '-' ? (
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${r.statusPulang === 'NORMAL' ? 'bg-green-100 text-green-700' : r.statusPulang === 'LEMBUR' ? 'bg-purple-100 text-purple-700' : 'bg-neutral-100 text-neutral-700'}`}>
+                              {r.statusPulang || 'NORMAL'}
+                            </span>
+                          ) : r.jamDatang ? (
+                            <span className="text-[9px] text-neutral-400 italic">Belum Pulang</span>
+                          ) : (
+                            <span className="text-neutral-400">-</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 align-middle">
+                        <span className="font-mono font-bold text-neutral-800 text-sm">{r.totalJam && r.totalJam !== '-' ? r.totalJam : '-'}</span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2020,6 +2039,68 @@ export default function App() {
                     <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada data bulan ini.</div>
                   ) : (
                     <>
+                    {/* Chart Visualization */}
+                    <div className="mb-6 bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
+                      <h3 className="text-neutral-700 font-bold text-sm mb-4 flex items-center gap-1.5">
+                        <BarChart3 className="w-4 h-4 text-[#cc0000]" />
+                        Visualisasi Total vs Target Jam Kerja ({laporanBulan})
+                      </h3>
+                      <div className="w-full h-80">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={laporanBulanan
+                              .filter(row => laporanPosisiFilter === 'Semua' || row.posisi === laporanPosisiFilter)
+                              .map(row => {
+                                const totalHours = typeof row.totalMenitKerja === 'number'
+                                  ? Number((row.totalMenitKerja / 60).toFixed(1))
+                                  : 0;
+                                const targetHours = (row.jumlahMasuk || 0) * 13;
+                                return {
+                                  nama: row.nama,
+                                  "Total Kerja": totalHours,
+                                  "Target Kerja": targetHours,
+                                };
+                              })
+                            }
+                            margin={{ top: 10, right: 10, left: -20, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                            <XAxis 
+                              dataKey="nama" 
+                              tick={{ fill: '#6b7280', fontSize: 11 }}
+                              axisLine={{ stroke: '#e5e7eb' }}
+                              tickLine={false}
+                            />
+                            <YAxis 
+                              tick={{ fill: '#6b7280', fontSize: 11 }}
+                              axisLine={{ stroke: '#e5e7eb' }}
+                              tickLine={false}
+                              unit="j"
+                            />
+                            <Tooltip 
+                              contentStyle={{ 
+                                backgroundColor: '#ffffff', 
+                                borderRadius: '8px', 
+                                borderColor: '#e5e7eb',
+                                fontSize: '12px',
+                                fontFamily: 'Inter, sans-serif'
+                              }} 
+                              formatter={(value) => [`${value} jam`]}
+                            />
+                            <Legend 
+                              verticalAlign="top" 
+                              height={36}
+                              iconType="circle"
+                              iconSize={8}
+                              wrapperStyle={{ fontSize: '11px', fontFamily: 'Inter, sans-serif' }}
+                            />
+                            <Bar dataKey="Total Kerja" fill="#cc0000" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                            <Bar dataKey="Target Kerja" fill="#9ca3af" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
                     {/* Desktop Table View */}
                     <div className="hidden md:block overflow-x-auto border border-neutral-200 rounded-lg">
                       <table className="w-full text-sm text-left whitespace-nowrap min-w-[600px]">
