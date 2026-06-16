@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 
@@ -189,6 +189,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const feishuImageInputRef = useRef<HTMLInputElement>(null);
   const hasNotifiedGeoRef = useRef(false);
+  const lastScheduledNotificationDateRef = useRef("");
 
 
   const getTodayString = () => {
@@ -221,11 +222,39 @@ export default function App() {
   });
 
 
+  const [notiPermission, setNotiPermission] = useState<NotificationPermission>('default');
+
   useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
+    if ('Notification' in window) {
+      setNotiPermission(Notification.permission);
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().then(perm => setNotiPermission(perm));
+      }
     }
   }, []);
+
+  const requestNotiPermission = () => {
+    if ('Notification' in window) {
+      Notification.requestPermission().then((perm) => {
+        setNotiPermission(perm);
+        if (perm === 'granted') {
+          toast.success("Notifikasi aktif! Pengingat otomatis pukul 08:00 pagi siap digunakan.");
+          try {
+            new Notification("Pengingat Absensi J&T", {
+              body: "Pengingat otomatis aktif! Anda akan diingatkan setiap jam 08:00 pagi jika belum absen dengen HP ini.",
+              icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg"
+            });
+          } catch (e) {
+            console.warn("Test notification failed to trigger inside iframe:", e);
+          }
+        } else {
+          toast.error("Izin notifikasi ditolak/ditutup. Silakan aktifkan manual di pengaturan browser Anda.");
+        }
+      });
+    } else {
+      toast.error("Notifikasi tidak didukung oleh browser Anda.");
+    }
+  };
 
   // Update favicon and reset error state when favicon config changes
   useEffect(() => {
@@ -241,6 +270,36 @@ export default function App() {
       link.href = settingsData.favicon;
     }
   }, [settingsData?.favicon]);
+
+  // Pengingat absensi otomatis (local push notification) pada jam 08:00 pagi jika belum absen
+  useEffect(() => {
+    if (!('Notification' in window)) return;
+
+    const interval = setInterval(() => {
+      const now = new Date();
+      // Pukul 08:00 pagi
+      if (now.getHours() === 8 && now.getMinutes() === 0) {
+        const dateStr = now.toDateString();
+        if (lastScheduledNotificationDateRef.current !== dateStr) {
+          // Periksa apakah sudah absen datang hari ini
+          const sudahAbsenCheck = absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-";
+          if (!sudahAbsenCheck) {
+            lastScheduledNotificationDateRef.current = dateStr;
+            if (Notification.permission === 'granted') {
+              new Notification("Pengingat Absensi J&T", {
+                body: "Sudah pukul 08:00 pagi! Anda belum melakukan Absen DATANG hari ini. Harap segera melakukan absensi.",
+                icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg",
+                vibrate: [350, 100, 350, 100, 350],
+                requireInteraction: true
+              } as any);
+            }
+          }
+        }
+      }
+    }, 30000); // Periksa tiap 30 detik agar tidak melewatkan menit awal
+
+    return () => clearInterval(interval);
+  }, [absenHariIni]);
 
   useEffect(() => {
     if (!('Notification' in window) || !('geolocation' in navigator)) return;
@@ -1063,6 +1122,43 @@ export default function App() {
   };
 
 
+  const handleHapusCache = () => {
+    const toastId = toast.loading("Sedang menghapus cache sistem...");
+    setTimeout(() => {
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+        
+        if (navigator.serviceWorker) {
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (const r of registrations) {
+              r.unregister();
+            }
+          });
+        }
+        
+        if (window.caches) {
+          caches.keys().then((names) => {
+            for (const name of names) {
+              caches.delete(name);
+            }
+          });
+        }
+        
+        toast.success("Cache berhasil dibersihkan! Memuat ulang...", { id: toastId });
+        setTimeout(() => {
+          window.location.reload();
+        }, 800);
+      } catch (err) {
+        toast.error("Gagal membersihkan cache secara penuh, memuat ulang...", { id: toastId });
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      }
+    }, 1200);
+  };
+
+
   return (
     <div className="min-h-screen bg-neutral-100 p-4 md:p-8 font-sans text-neutral-800 flex flex-col items-center">
       <Toaster position="top-center" richColors />
@@ -1126,6 +1222,30 @@ export default function App() {
 
         {/* Formulir */}
         <div className="p-6 space-y-5">
+          {/* Automatic Reminder Status & Setup Box */}
+          <div className="bg-amber-50/60 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900/95 flex items-start gap-2.5 shadow-sm">
+            <Bell className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
+            <div className="flex-1">
+              <span className="font-bold block text-[10px] uppercase tracking-wider text-amber-800">Sistem Pengingat Pukul 08:00</span>
+              <p className="mt-0.5 leading-relaxed font-semibold">
+                Setiap pukul <strong>08:00 pagi</strong>, sistem ini akan mengirim pengingat otomatis ke HP Anda jika belum melakukan absen datang.
+              </p>
+              {notiPermission !== 'granted' ? (
+                <button
+                  type="button"
+                  onClick={requestNotiPermission}
+                  className="mt-2 bg-[#cc0000] hover:bg-[#a30000] text-white font-extrabold px-3 py-1 rounded text-[10px] uppercase tracking-wider transition shadow-sm cursor-pointer select-none"
+                >
+                  Aktifkan Pengingat di HP
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5 select-none uppercase tracking-wider">
+                  ● Pengingat Aktif di HP ini
+                </span>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-4">
             {/* Nama */}
             <div>
@@ -2134,6 +2254,20 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Footer / Clear Cache Button */}
+      <div className="mt-8 mb-4 max-w-xs w-full flex flex-col items-center gap-1.5 text-center px-4 self-center animate-in fade-in duration-300">
+        <button
+          onClick={handleHapusCache}
+          className="text-[11px] font-bold text-neutral-500 hover:text-[#cc0000] hover:border-[#cc0000] border border-neutral-300 bg-white hover:bg-red-50/40 px-4 py-2.5 rounded-lg transition shadow-sm select-none uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer w-full"
+        >
+          <RefreshCw className="w-3.5 h-3.5 transition-transform duration-500 hover:rotate-180" />
+          Hapus Cache / Reload Aplikasi
+        </button>
+        <p className="text-[10px] text-neutral-400 font-medium leading-relaxed">
+          Gunakan tombol di atas agar pengaturan sistem terbaru muncul di HP Anda.
+        </p>
+      </div>
     </div>
   );
 }
