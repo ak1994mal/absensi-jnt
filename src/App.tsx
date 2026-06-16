@@ -178,9 +178,29 @@ export default function App() {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
   };
 
+  const normalizeDateStr = (str: string) => {
+    if (!str) return "";
+    const cleaned = str.trim().replace(/-/g, '/');
+    const parts = cleaned.split('/');
+    if (parts.length === 3) {
+      const d = parts[0].padStart(2, '0');
+      const m = parts[1].padStart(2, '0');
+      const y = parts[2];
+      return `${d}/${m}/${y.length === 2 ? '20' + y : y}`;
+    }
+    return cleaned;
+  };
+
 
   const todayStr = getTodayString();
-  const absenHariIni = riwayat.find(r => r.tanggal === todayStr || r.tanggal === new Date().toLocaleDateString('id-ID'));
+  const normalizedToday = normalizeDateStr(todayStr);
+  const absenHariIni = riwayat.find(r => {
+    if (!r.tanggal) return false;
+    const normTanggal = normalizeDateStr(r.tanggal);
+    const normToday1 = normalizedToday;
+    const normToday2 = normalizeDateStr(new Date().toLocaleDateString('id-ID'));
+    return normTanggal === normToday1 || normTanggal === normToday2;
+  });
 
 
   useEffect(() => {

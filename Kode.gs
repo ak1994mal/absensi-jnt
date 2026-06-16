@@ -157,7 +157,8 @@ function processForm(data) {
   // Cari absen hari ini munddur dari bawah
   // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom H (7) = Status Masuk
   for (let i = dataRange.length - 1; i > 0; i--) { 
-    if (dataRange[i][0] == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") { 
+    const rowTanggal = parseSheetDate(dataRange[i][0]);
+    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") { 
       userRowIndex = i + 1;
       break;
     }
@@ -346,7 +347,7 @@ function getRiwayat(nama) {
   for (let i = values.length - 1; i > 0; i--) {
     if (values[i][1] === nama) {
       riwayat.push({
-        tanggal: values[i][0],
+        tanggal: parseSheetDate(values[i][0]),
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
@@ -381,9 +382,10 @@ function getRingkasanHarian() {
   const ringkasan = [];
   
   for (let i = 1; i < values.length; i++) {
-    if (values[i][0] === filterTanggal) {
+    const rowTanggal = parseSheetDate(values[i][0]);
+    if (rowTanggal === filterTanggal) {
       ringkasan.push({
-        tanggal: values[i][0],
+        tanggal: rowTanggal,
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
@@ -413,8 +415,8 @@ function getLaporanBulanan(bulan) {
   
   const summaryMap = {};
   for (let i = 1; i < values.length; i++) {
-    const tgl = values[i][0] || ""; 
-    if (mmFilter && !tgl.toString().includes(mmFilter)) {
+    const tgl = parseSheetDate(values[i][0]); 
+    if (mmFilter && !tgl.includes(mmFilter)) {
       continue;
     }
     
@@ -475,10 +477,10 @@ function getRiwayatBulan(nama, bulan) {
   
   const riwayat = [];
   for (let i = 1; i < values.length; i++) {
-    const tgl = values[i][0] || ""; 
-    if (values[i][1] === nama && tgl.toString().includes(mmFilter)) {
+    const tgl = parseSheetDate(values[i][0]); 
+    if (values[i][1] === nama && tgl.includes(mmFilter)) {
       riwayat.push({
-        tanggal: values[i][0],
+        tanggal: tgl,
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
@@ -499,4 +501,50 @@ function getRiwayatBulan(nama, bulan) {
   
   riwayat.reverse(); 
   return { status: "success", data: riwayat };
+}
+
+/**
+ * Robust date formatting helper function to handle both Date objects and various string date formats.
+ * Ensures dates are consistently returned in DD/MM/YYYY format.
+ */
+function parseSheetDate(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    const day = ("0" + val.getDate()).slice(-2);
+    const month = ("0" + (val.getMonth() + 1)).slice(-2);
+    const year = val.getFullYear();
+    return day + "/" + month + "/" + year;
+  }
+  
+  const str = String(val).trim();
+  if (str === "-") return "-";
+  
+  // Handle ISO string format "YYYY-MM-DDTHH:mm:ss..."
+  if (str.includes("T")) {
+    try {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        const day = ("0" + d.getDate()).slice(-2);
+        const month = ("0" + (d.getMonth() + 1)).slice(-2);
+        const year = d.getFullYear();
+        return day + "/" + month + "/" + year;
+      }
+    } catch (e) {}
+  }
+  
+  // Handle "YYYY-MM-DD" format
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    try {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        const day = ("0" + d.getDate()).slice(-2);
+        const month = ("0" + (d.getMonth() + 1)).slice(-2);
+        const year = d.getFullYear();
+        return day + "/" + month + "/" + year;
+      }
+    } catch(e) {}
+  }
+
+  // Handle standard "DD/MM/YYYY" or other string format
+  return str;
 }
