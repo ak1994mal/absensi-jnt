@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3 } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
@@ -185,6 +185,7 @@ export default function App() {
   
   const [imageBase64, setImageBase64] = useState("");
   const [loadingSubmit, setLoadingSubmit] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState<string>('');
   const [buktiFeishuBase64, setBuktiFeishuBase64] = useState("");
   const [isFeishuOpen, setIsFeishuOpen] = useState(false);
 
@@ -954,9 +955,11 @@ export default function App() {
 
 
     setLoadingSubmit(true);
+    setSubmitStatus("Memulai...");
     toast.info("Memproses data absen...");
 
     const sendPayload = async (userLat: number, userLng: number) => {
+        setSubmitStatus("Mengirim data absensi ke sistem...");
         toast.info("⏳ Mengirim data absen, mohon tunggu...");
         
         const payload = {
@@ -1031,6 +1034,7 @@ export default function App() {
           toast.error(`Error: ${err.message}`);
         } finally {
           setLoadingSubmit(false);
+          setSubmitStatus("");
         }
     };
 
@@ -1040,57 +1044,76 @@ export default function App() {
     if (keterangan === 'IZIN' || !requireLocation) {
       sendPayload(0, 0); // Skip GPS requirement for IZIN or if location tracking is disabled
     } else {
+      setSubmitStatus("Mendapatkan lokasi GPS...");
       toast.info("Mendapatkan lokasi GPS...");
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          const userLat = pos.coords.latitude;
-          const userLng = pos.coords.longitude;
+      
+      const requestGPS = (useHighAcc: boolean, timeoutMs: number, maxAgeMs: number) => {
+        setSubmitStatus(useHighAcc ? "Mencari GPS akurasi tinggi..." : "Gagal dapat satelit, re-try GPS akurasi rendah...");
+        navigator.geolocation.getCurrentPosition(
+          async (pos) => {
+            const userLat = pos.coords.latitude;
+            const userLng = pos.coords.longitude;
 
 
-          // Verifikasi Radius Lokasi
-          let outletLat = 0;
-          let outletLng = 0;
-          let maxRadius = 150;
+            // Verifikasi Radius Lokasi
+            let outletLat = 0;
+            let outletLng = 0;
+            let maxRadius = 150;
 
-          if (settingsData?.outlets && settingsData.outlets.length > 0) {
-            const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
-            if (selectedOutlet) {
-              outletLat = selectedOutlet.lat;
-              outletLng = selectedOutlet.lng;
-              maxRadius = selectedOutlet.radius || 150;
+            if (settingsData?.outlets && settingsData.outlets.length > 0) {
+              const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
+              if (selectedOutlet) {
+                outletLat = selectedOutlet.lat;
+                outletLng = selectedOutlet.lng;
+                maxRadius = selectedOutlet.radius || 150;
+              }
+            } else {
+              if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
+                outletLat = -6.205649180689262;
+                outletLng = 106.45134398119775;
+              } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
+                outletLat = -6.206571510648256;
+                outletLng = 106.38621792361727;
+              }
             }
-          } else {
-            if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
-              outletLat = -6.205649180689262;
-              outletLng = 106.45134398119775;
-            } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
-              outletLat = -6.206571510648256;
-              outletLng = 106.38621792361727;
+
+            if (outletLat !== 0 && outletLng !== 0) {
+              setSubmitStatus("Memeriksa kesesuaian radius dengan outlet...");
+              const distance = calculateDistance(userLat, userLng, outletLat, outletLng);
+
+              if (distance > maxRadius) {
+                setLoadingSubmit(false);
+                setSubmitStatus("");
+                return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${maxRadius} meter.`);
+              }
             }
-          }
 
-          if (outletLat !== 0 && outletLng !== 0) {
-            const distance = calculateDistance(userLat, userLng, outletLat, outletLng);
-
-            if (distance > maxRadius) {
-              setLoadingSubmit(false);
-              return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${maxRadius} meter.`);
+            sendPayload(userLat, userLng);
+          },
+          (err) => {
+            if (useHighAcc && (err.code === 3 || err.code === 2)) {
+               console.warn("GPS High Accuracy timeout/unavailable. Retrying with Low Accuracy...", err);
+               setSubmitStatus("GPS Timeout. Mencoba sinyal rendah...");
+               toast.info("Sinyal GPS lemah, mencoba alternatif lokasi...");
+               requestGPS(false, 15000, 60000); // Fallback: low accuracy, wait 15s, allow 1 min old cache
+               return;
             }
-          }
-
-          sendPayload(userLat, userLng);
-        },
-        (err) => {
-          setLoadingSubmit(false);
-          console.error("GPS Error:", err);
-          let errMsg = `GPS Error! Pastikan izin lokasi aktif. (${err.message})`;
-          if (err.code === 1) errMsg = "Akses Lokasi Ditolak! Tolong izinkan GPS di pengaturan browser Anda.";
-          else if (err.code === 2) errMsg = "Lokasi Tidak Tersedia! Pastikan GPS perangkat Anda aktif.";
-          else if (err.code === 3) errMsg = "Pencarian lokasi Timeout. Sinyal GPS mungkin lemah, coba di tempat yang lebih terbuka.";
-          toast.error(errMsg);
-        },
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
-      );
+            
+            setLoadingSubmit(false);
+            setSubmitStatus("");
+            console.error("GPS Error:", err);
+            let errMsg = `GPS Error! Pastikan izin lokasi aktif. (${err.message})`;
+            if (err.code === 1) errMsg = "Akses Lokasi Ditolak! Tolong izinkan GPS di pengaturan browser Anda.";
+            else if (err.code === 2) errMsg = "Lokasi Tidak Tersedia! Pastikan GPS perangkat aktif dan ada koneksi internet.";
+            else if (err.code === 3) errMsg = "Pencarian lokasi Timeout. Sinyal lemah, coba di tempat yang lebih terbuka atau gunakan koneksi Wi-Fi.";
+            toast.error(errMsg);
+          },
+          { enableHighAccuracy: useHighAcc, timeout: timeoutMs, maximumAge: maxAgeMs }
+        );
+      };
+      
+      // Attempt 1: High Accuracy, 12 detik, tanpa cache
+      requestGPS(true, 12000, 0);
     }
   };
 
@@ -1416,6 +1439,17 @@ export default function App() {
               </>
             )}
           </button>
+          
+          {/* Dynamic Status Indicator */}
+          {submitStatus && (
+            <div className="mt-3 w-full flex items-center justify-center gap-2 animate-in fade-in duration-300">
+              <span className="relative flex h-2.5 w-2.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#cc0000] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#cc0000]"></span>
+              </span>
+              <p className="text-xs font-medium text-neutral-600 truncate">{submitStatus}</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1430,6 +1464,36 @@ export default function App() {
             </div>
             <button onClick={() => fetchRiwayat(nama)} className="text-xs text-neutral-500 hover:text-neutral-800 underline">Refresh</button>
           </div>
+          
+          {!loadingRiwayat && !errorRiwayat && riwayat.length > 0 && (
+            <div className="px-4 py-3 bg-white border-b border-neutral-100 flex items-center gap-3">
+              <div className="flex-1 bg-emerald-50/80 border border-emerald-100 rounded-lg p-2.5 flex items-center gap-3 shadow-sm">
+                <div className="bg-emerald-100/80 text-emerald-600 p-2 rounded-md shrink-0">
+                   <CalendarDays className="w-4 h-4" />
+                </div>
+                <div>
+                   <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-800">Total Masuk</p>
+                   <div className="flex items-baseline gap-1 mt-0.5">
+                     <p className="text-lg font-black text-emerald-700 leading-none">{riwayat.filter(r => r.keterangan !== 'IZIN' && r.jamDatang && r.jamDatang !== '-').length}</p>
+                     <span className="text-xs font-semibold text-emerald-600">Hari</span>
+                   </div>
+                </div>
+              </div>
+              <div className="flex-1 bg-rose-50/80 border border-rose-100 rounded-lg p-2.5 flex items-center gap-3 shadow-sm">
+                <div className="bg-rose-100/80 text-rose-600 p-2 rounded-md shrink-0">
+                   <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                   <p className="text-[10px] uppercase tracking-wider font-bold text-rose-800">Terlambat</p>
+                   <div className="flex items-baseline gap-1 mt-0.5">
+                     <p className="text-lg font-black text-rose-700 leading-none">{riwayat.filter(r => r.statusMasuk && r.statusMasuk.toUpperCase().includes('TELAT')).length}</p>
+                     <span className="text-xs font-semibold text-rose-600">Kali</span>
+                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="p-0 overflow-x-auto">
             {loadingRiwayat ? (
               <div className="w-full p-4 animate-pulse flex flex-col gap-3">
