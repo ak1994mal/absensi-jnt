@@ -6,7 +6,7 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 import { motion, AnimatePresence } from 'motion/react';
 
 
-const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
+const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
 
 
 const getMapEmbedUrl = (url?: string) => {
@@ -310,22 +310,43 @@ export default function App() {
 
   const requestNotiPermission = () => {
     if ('Notification' in window) {
-      Notification.requestPermission().then((perm) => {
-        setNotiPermission(perm);
-        if (perm === 'granted') {
-          toast.success("Notifikasi aktif! Pengingat otomatis pukul 08:00 pagi siap digunakan.");
-          try {
-            new Notification("Pengingat Absensi J&T", {
-              body: "Pengingat otomatis aktif! Anda akan diingatkan setiap jam 08:00 pagi jika belum absen dengen HP ini.",
-              icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg"
-            });
-          } catch (e) {
-            console.warn("Test notification failed to trigger inside iframe:", e);
-          }
-        } else {
-          toast.error("Izin notifikasi ditolak/ditutup. Silakan aktifkan manual di pengaturan browser Anda.");
+      try {
+        const inIframe = window !== window.top;
+        if (inIframe) {
+            toast.info("Browser memblokir perizinan notifikasi karena aplikasi berjalan di dalam frame preview. Silakan buka aplikasi di tab baru atau dari link website untuk mengaktifkan notifikasi.");
         }
-      });
+        
+        Notification.requestPermission().then((perm) => {
+          setNotiPermission(perm);
+          if (perm === 'granted') {
+            toast.success("Notifikasi aktif! Pengingat otomatis pukul 08:00 pagi siap digunakan.");
+            try {
+              new Notification("Pengingat Absensi J&T", {
+                body: "Pengingat otomatis aktif! Anda akan diingatkan setiap jam 08:00 pagi jika belum absen dengan HP ini.",
+                icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg"
+              });
+            } catch (e) {
+              console.warn("Test notification failed:", e);
+            }
+          } else {
+            if (inIframe) {
+              toast.error("Izin diblokir oleh browser dalam mode pratinjau. Buka di tab baru dan atur izin manual.");
+            } else {
+              toast.error("Izin notifikasi ditolak/ditutup. Silakan aktifkan manual di pengaturan browser Anda.");
+            }
+          }
+        }).catch(err => {
+          console.warn("Notification request permission failed:", err);
+          if (window !== window.top) {
+            toast.error("Browser memblokir izin notifikasi. Buka aplikasi di jendela penuh (tab baru).");
+          } else {
+            toast.error("Gagal meminta izin notifikasi. Fitur ini mungkin diblokir oleh browser.");
+          }
+        });
+      } catch (err) {
+        console.warn("Notification request permission threw an error:", err);
+        toast.error("Gagal meminta izin notifikasi.");
+      }
     } else {
       toast.error("Notifikasi tidak didukung oleh browser Anda.");
     }
@@ -415,9 +436,13 @@ export default function App() {
   }, [absenHariIni, settingsData?.outlets, settingsData?.requireLocation]);
 
 
-  const getSisaWaktuKerja = (jamDatangStr: string, targetJam: number) => {
+  const getSisaWaktuKerja = (jamDatangStr: any, targetJam: number) => {
     if (!jamDatangStr || jamDatangStr === "-") return null;
-    const parts = jamDatangStr.split(":");
+    
+    // Pastikan selalu string sebelum di-split (fallback type safety)
+    const jamString = typeof jamDatangStr === "string" ? jamDatangStr : String(jamDatangStr);
+    
+    const parts = jamString.split(":");
     if (parts.length !== 2) return null;
     
     const hDatang = parseInt(parts[0], 10);
@@ -1292,7 +1317,11 @@ export default function App() {
               <p className="mt-0.5 leading-relaxed font-semibold">
                 Setiap pukul <strong>08:00 pagi</strong>, sistem ini akan mengirim pengingat otomatis ke HP Anda jika belum melakukan absen datang.
               </p>
-              {notiPermission !== 'granted' ? (
+              {notiPermission === 'denied' ? (
+                <div className="mt-2 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 select-none">
+                  Pengingat ditolak. Aktifkan manual izin notifikasi di setting browser Anda.
+                </div>
+              ) : notiPermission !== 'granted' ? (
                 <button
                   type="button"
                   onClick={requestNotiPermission}

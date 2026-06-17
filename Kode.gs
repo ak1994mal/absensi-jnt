@@ -211,12 +211,13 @@ function processForm(data) {
     }
     
     // Jam Datang Kolom E (index 4)
-    const jamDatang = dataRange[userRowIndex - 1][4]; 
+    let jamDatangStr = parseSheetTime(dataRange[userRowIndex - 1][4]);
+    
     let totalJamStr = "-";
     let statusPulang = "NORMAL";
     
-    if (jamDatang && jamDatang !== "-") {
-      const pDatang = jamDatang.split(":");
+    if (jamDatangStr && jamDatangStr !== "-") {
+      const pDatang = jamDatangStr.split(":");
       const hoursDiff = dateObj.getHours() - parseInt(pDatang[0]);
       const minsDiff = dateObj.getMinutes() - parseInt(pDatang[1]);
       
@@ -351,8 +352,8 @@ function getRiwayat(nama) {
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
-        jamDatang: values[i][4],
-        jamPulang: values[i][5],
+        jamDatang: parseSheetTime(values[i][4]),
+        jamPulang: parseSheetTime(values[i][5]),
         totalJam: values[i][6],
         statusMasuk: values[i][7],
         statusPulang: values[i][8],
@@ -389,8 +390,8 @@ function getRingkasanHarian() {
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
-        jamDatang: values[i][4],
-        jamPulang: values[i][5],
+        jamDatang: parseSheetTime(values[i][4]),
+        jamPulang: parseSheetTime(values[i][5]),
         totalJam: values[i][6],
         statusMasuk: values[i][7],
         statusPulang: values[i][8],
@@ -494,8 +495,8 @@ function getRiwayatBulan(nama, bulan) {
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
-        jamDatang: values[i][4],
-        jamPulang: values[i][5],
+        jamDatang: parseSheetTime(values[i][4]),
+        jamPulang: parseSheetTime(values[i][5]),
         totalJam: values[i][6],
         statusMasuk: values[i][7],
         statusPulang: values[i][8],
@@ -517,6 +518,30 @@ function getRiwayatBulan(nama, bulan) {
  * Robust date formatting helper function to handle both Date objects and various string date formats.
  * Ensures dates are consistently returned in DD/MM/YYYY format.
  */
+function parseSheetTime(val) {
+  if (val === null || val === undefined || val === "") return "-";
+  if (val === "-") return "-";
+  
+  if (val instanceof Date) {
+    const hh = ("0" + val.getHours()).slice(-2);
+    const mm = ("0" + val.getMinutes()).slice(-2);
+    return hh + ":" + mm;
+  } else if (typeof val === "number") {
+    // Check if it's a fractional day (gas time format)
+    let totalSeconds = Math.round(val * 24 * 60 * 60);
+    let h = Math.floor(totalSeconds / 3600);
+    let m = Math.floor((totalSeconds % 3600) / 60);
+    return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
+  } else if (typeof val === "string" && val.includes("T") && !isNaN(Date.parse(val))) {
+    const d = new Date(val);
+    const hh = ("0" + d.getHours()).slice(-2);
+    const mm = ("0" + d.getMinutes()).slice(-2);
+    return hh + ":" + mm;
+  }
+  
+  return String(val);
+}
+
 function parseSheetDate(val) {
   if (!val) return "";
   if (val instanceof Date) {
