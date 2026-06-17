@@ -197,8 +197,7 @@ export default function App() {
   const [loadingRingkasan, setLoadingRingkasan] = useState(false);
 
 
-  const [snoozeUntil, setSnoozeUntil] = useState<number | null>(null);
-  const [showPulangReminder, setShowPulangReminder] = useState(false);
+
 
 
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
@@ -297,60 +296,7 @@ export default function App() {
   });
 
 
-  const [notiPermission, setNotiPermission] = useState<NotificationPermission>('default');
 
-  useEffect(() => {
-    if ('Notification' in window) {
-      setNotiPermission(Notification.permission);
-      if (Notification.permission === 'default') {
-        Notification.requestPermission().then(perm => setNotiPermission(perm));
-      }
-    }
-  }, []);
-
-  const requestNotiPermission = () => {
-    if ('Notification' in window) {
-      try {
-        const inIframe = window !== window.top;
-        if (inIframe) {
-            toast.info("Browser memblokir perizinan notifikasi karena aplikasi berjalan di dalam frame preview. Silakan buka aplikasi di tab baru atau dari link website untuk mengaktifkan notifikasi.");
-        }
-        
-        Notification.requestPermission().then((perm) => {
-          setNotiPermission(perm);
-          if (perm === 'granted') {
-            toast.success("Notifikasi aktif! Pengingat otomatis pukul 08:00 pagi siap digunakan.");
-            try {
-              new Notification("Pengingat Absensi J&T", {
-                body: "Pengingat otomatis aktif! Anda akan diingatkan setiap jam 08:00 pagi jika belum absen dengan HP ini.",
-                icon: "https://upload.wikimedia.org/wikipedia/commons/3/3a/J%26T_Express_logo.svg"
-              });
-            } catch (e) {
-              console.warn("Test notification failed:", e);
-            }
-          } else {
-            if (inIframe) {
-              toast.error("Izin diblokir oleh browser dalam mode pratinjau. Buka di tab baru dan atur izin manual.");
-            } else {
-              toast.error("Izin notifikasi ditolak/ditutup. Silakan aktifkan manual di pengaturan browser Anda.");
-            }
-          }
-        }).catch(err => {
-          console.warn("Notification request permission failed:", err);
-          if (window !== window.top) {
-            toast.error("Browser memblokir izin notifikasi. Buka aplikasi di jendela penuh (tab baru).");
-          } else {
-            toast.error("Gagal meminta izin notifikasi. Fitur ini mungkin diblokir oleh browser.");
-          }
-        });
-      } catch (err) {
-        console.warn("Notification request permission threw an error:", err);
-        toast.error("Gagal meminta izin notifikasi.");
-      }
-    } else {
-      toast.error("Notifikasi tidak didukung oleh browser Anda.");
-    }
-  };
 
   // Update favicon and reset error state when favicon config changes
   useEffect(() => {
@@ -901,38 +847,7 @@ export default function App() {
   }, [activeTab, isOwnerLoggedIn, ownerView, laporanBulan]);
 
 
-  useEffect(() => {
-    const checkReminder = () => {
-      const now = new Date();
-      if (now.getHours() >= 20) {
-        if (snoozeUntil && now.getTime() < snoozeUntil) {
-          setShowPulangReminder(false);
-        } else {
-          setShowPulangReminder(true);
-        }
-      } else {
-        setShowPulangReminder(false);
-      }
-    };
-    
-    checkReminder();
-    const interval = setInterval(checkReminder, 60000);
-    return () => clearInterval(interval);
-  }, [snoozeUntil]);
 
-
-  const handleSnooze = () => {
-    setSnoozeUntil(new Date().getTime() + 30 * 60 * 1000); // 30 mins
-    setShowPulangReminder(false);
-  };
-
-
-  const handleAbsenSekarang = () => {
-    setActiveTab('absen');
-    setKeterangan('PULANG');
-    setShowPulangReminder(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
 
 
   const handleBuktiFeishu = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1251,31 +1166,7 @@ export default function App() {
       <Toaster position="top-center" richColors />
       
       {/* Reminder Absen Pulang */}
-      {showPulangReminder && (
-        <div className="w-full max-w-sm sm:max-w-md mb-6 bg-[#fff8eb] border border-[#f0c14b] p-4 rounded-xl shadow-sm animate-in fade-in slide-in-from-top-4 flex flex-col gap-3">
-          <div className="flex gap-3">
-            <Bell className="w-5 h-5 text-[#d49921] shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-bold text-[#b47a12]">Waktu Absen Pulang!</h3>
-              <p className="text-sm text-[#a3690d] mt-1 leading-relaxed">Waktu sudah menunjukkan pukul 20:00 atau lebih. Jangan lupa untuk melakukan absen pulang jika pekerjaan Anda telah selesai.</p>
-            </div>
-          </div>
-          <div className="flex gap-2 justify-end mt-1">
-            <button 
-              onClick={handleSnooze}
-              className="px-3 py-1.5 text-sm font-semibold text-[#8a5b10] bg-[#faebb5] hover:bg-[#ebd591] rounded-md transition"
-            >
-              Lanjut Kerja
-            </button>
-            <button 
-              onClick={handleAbsenSekarang}
-              className="px-3 py-1.5 text-sm font-semibold text-white bg-[#cc0000] hover:bg-[#a30000] rounded-md shadow-sm transition"
-            >
-              Absen Sekarang
-            </button>
-          </div>
-        </div>
-      )}
+
 
 
       {/* Navigation Tabs */}
@@ -1309,33 +1200,7 @@ export default function App() {
 
         {/* Formulir */}
         <div className="p-6 space-y-5">
-          {/* Automatic Reminder Status & Setup Box */}
-          <div className="bg-amber-50/60 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900/95 flex items-start gap-2.5 shadow-sm">
-            <Bell className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
-            <div className="flex-1">
-              <span className="font-bold block text-[10px] uppercase tracking-wider text-amber-800">Sistem Pengingat Pukul 08:00</span>
-              <p className="mt-0.5 leading-relaxed font-semibold">
-                Setiap pukul <strong>08:00 pagi</strong>, sistem ini akan mengirim pengingat otomatis ke HP Anda jika belum melakukan absen datang.
-              </p>
-              {notiPermission === 'denied' ? (
-                <div className="mt-2 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 select-none">
-                  Pengingat ditolak. Aktifkan manual izin notifikasi di setting browser Anda.
-                </div>
-              ) : notiPermission !== 'granted' ? (
-                <button
-                  type="button"
-                  onClick={requestNotiPermission}
-                  className="mt-2 bg-[#cc0000] hover:bg-[#a30000] text-white font-extrabold px-3 py-1 rounded text-[10px] uppercase tracking-wider transition shadow-sm cursor-pointer select-none"
-                >
-                  Aktifkan Pengingat di HP
-                </button>
-              ) : (
-                <span className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5 select-none uppercase tracking-wider">
-                  ● Pengingat Aktif di HP ini
-                </span>
-              )}
-            </div>
-          </div>
+
 
           <div className="space-y-4">
             {/* Nama */}
