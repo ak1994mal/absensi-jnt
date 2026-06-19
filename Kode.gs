@@ -267,19 +267,23 @@ function getSettings() {
   }
   
   // Mengambil data outlet
-  const sheetOutlet = ss.getSheetByName("DataOutlet");
+  let sheetOutlet = ss.getSheetByName("DataOutlet");
+  if (!sheetOutlet) {
+    sheetOutlet = ss.insertSheet("DataOutlet");
+    sheetOutlet.getRange(1, 1, 1, 4).setValues([["Nama Outlet", "Latitude", "Longitude", "Toleransi Radius"]]);
+  }
+  
   let outlets = [];
-  if (sheetOutlet) {
-    const values = sheetOutlet.getDataRange().getValues();
-    for (let i = 1; i < values.length; i++) {
-      if (values[i][0]) {
-        outlets.push({
-          nama: values[i][0],
-          lat: parseFloat(values[i][1]) || 0,
-          lng: parseFloat(values[i][2]) || 0,
-          radius: parseFloat(values[i][3]) || 150
-        });
-      }
+  const values = sheetOutlet.getDataRange().getValues();
+  // If the sheet is empty or only contains headers, values.length will be 1 or less
+  for (let i = 1; i < values.length; i++) {
+    if (values[i][0]) {
+      outlets.push({
+        nama: values[i][0],
+        lat: parseFloat(values[i][1]) || 0,
+        lng: parseFloat(values[i][2]) || 0,
+        radius: parseFloat(values[i][3]) || 150
+      });
     }
   }
 
@@ -300,20 +304,25 @@ function saveSettings(data) {
   
   // Update outlets if provided
   if (data.outlets && Array.isArray(data.outlets)) {
-    const sheetOutlet = ss.getSheetByName("DataOutlet");
-    if (sheetOutlet) {
-      const lastRow = sheetOutlet.getLastRow();
-      if (lastRow > 1) {
-        sheetOutlet.getRange(2, 1, lastRow - 1, 4).clearContent();
-      }
-      
-      data.outlets.forEach((out, idx) => {
-        sheetOutlet.getRange(idx + 2, 1).setValue(out.nama || "");
-        sheetOutlet.getRange(idx + 2, 2).setValue(Number(out.lat) || 0);
-        sheetOutlet.getRange(idx + 2, 3).setValue(Number(out.lng) || 0);
-        sheetOutlet.getRange(idx + 2, 4).setValue(Number(out.radius) || 150);
-      });
+    let sheetOutlet = ss.getSheetByName("DataOutlet");
+    if (!sheetOutlet) {
+      sheetOutlet = ss.insertSheet("DataOutlet");
     }
+    
+    // Pastikan header selalu terpasang rapi di baris pertama
+    sheetOutlet.getRange(1, 1, 1, 4).setValues([["Nama Outlet", "Latitude", "Longitude", "Toleransi Radius"]]);
+    
+    const lastRow = sheetOutlet.getLastRow();
+    if (lastRow > 1) {
+      sheetOutlet.getRange(2, 1, lastRow - 1, 4).clearContent();
+    }
+    
+    data.outlets.forEach((out, idx) => {
+      sheetOutlet.getRange(idx + 2, 1).setValue(out.nama || "");
+      sheetOutlet.getRange(idx + 2, 2).setValue(Number(out.lat) || 0);
+      sheetOutlet.getRange(idx + 2, 3).setValue(Number(out.lng) || 0);
+      sheetOutlet.getRange(idx + 2, 4).setValue(Number(out.radius) || 150);
+    });
   }
   
   return { status: "success", message: "Pengaturan berhasil disimpan" };
