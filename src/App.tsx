@@ -24,6 +24,8 @@ export const OUTLETS = [
   { name: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727 }
 ];
 
+const EMPTY_ARRAY: any[] = [];
+
 
 export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
   const R = 6371e3; // Radius bumi dalam meter
@@ -2250,7 +2252,7 @@ export default function App() {
                       {/* Right Panel: Interactive Outlet Map & Radius Editor */}
                       <div className="flex-1 w-full min-w-0">
                         <OutletMapManager 
-                          outlets={settingsData.outlets || []}
+                          outlets={settingsData.outlets || EMPTY_ARRAY}
                           onSaveOutlets={handleUpdateOutlets}
                           saving={savingSettings}
                         />
