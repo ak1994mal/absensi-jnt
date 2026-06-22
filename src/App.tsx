@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
@@ -206,7 +206,7 @@ export default function App() {
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
   const [ownerView, setOwnerView] = useState<'harian' | 'bulanan' | 'settings'>('harian');
-  const [targetJamKerja, setTargetJamKerja] = useState<number>(8);
+  const [targetJamKerja, setTargetJamKerja] = useState<number>(12);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
   const [laporanBulan, setLaporanBulan] = useState<string>(() => {
     const d = new Date();
@@ -1406,6 +1406,30 @@ export default function App() {
                 WAJIB ISI FORM PUSAT (FEISHU)
               </div>
               
+              {/* Solusi Khusus iPhone / Masalah Upload Selfie */}
+              <div className="p-3 w-full bg-amber-50 border-b border-neutral-200 flex flex-col md:flex-row items-center justify-between gap-3 px-4">
+                <div className="flex gap-2.5 items-start">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-left">
+                    <p className="text-[12px] font-bold text-amber-800">
+                      Kendala Upload Foto di iPhone?
+                    </p>
+                    <p className="text-[11px] text-amber-700 leading-snug mt-1">
+                      Sistem iOS/iPhone (Safari/Chrome) memblokir pengunggahan foto di dalam frame. Jika foto selfie Anda tidak terupload pada form di bawah, silakan tekan tombol merah di sebelah kanan untuk mengisinya langsung secara lancar di browser handphone Anda.
+                    </p>
+                  </div>
+                </div>
+                <a 
+                  href="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="shrink-0 w-full md:w-auto text-center bg-[#cc0000] hover:bg-[#a30000] active:scale-95 text-white font-bold text-xs py-2 px-3.5 rounded-lg shadow-sm transition flex items-center justify-center gap-1.5"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Buka Form di Tab Baru
+                </a>
+              </div>
+              
               <div className="w-full h-[550px] border-b border-neutral-200 bg-neutral-50">
                 <iframe 
                   src="https://jtexpress.sg.feishu.cn/share/base/form/shrlgF7kXWhZJOFC4wOQSOWbo6g" 
@@ -1417,7 +1441,7 @@ export default function App() {
               
               <div className="p-4 w-full flex flex-col items-center gap-3 bg-neutral-50">
                 <p className="text-xs text-neutral-600 text-center font-medium">
-                  Silakan isi form Feishu di atas langsung pada frame ini. Setelah selesai mengisi form, klik tombol <strong>"Kirim Absensi"</strong> di bawah untuk menyelesaikan proses pencatatan absen di sistem internal.
+                  Silakan isi form Feishu di atas langsung pada frame ini atau melalui tab baru. Setelah selesai mengisi form, klik tombol <strong>"Kirim Absensi"</strong> di bawah untuk menyelesaikan proses pencatatan absen di sistem internal.
                 </p>
               </div>
             </div>
