@@ -78,64 +78,6 @@ function getSpreadsheet() {
   return SpreadsheetApp.openById(SPREADSHEET_ID);
 }
 
-// Baca toleransi telat (menit) dari sheet Settings!B7. Default 30 kalau kosong/tidak valid.
-function getToleransiTelat() {
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName("Settings");
-  if (!sheet) return 30;
-  const val = sheet.getRange("B7").getValue();
-  const num = parseInt(val, 10);
-  return isNaN(num) ? 30 : num;
-}
-
-// Baca jam masuk untuk posisi tertentu dari sheet DataPosisi. Default "08:00" kalau tidak ditemukan.
-function getJamMasukPosisi(posisi) {
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName("DataPosisi");
-  if (!sheet) return "08:00";
-  const values = sheet.getDataRange().getValues();
-  for (let i = 1; i < values.length; i++) {
-    if (values[i][0] && values[i][0].toString().trim() === posisi) {
-      return values[i][1] ? values[i][1].toString().trim() : "08:00";
-    }
-  }
-  return "08:00";
-}
-
-// "08:30" -> 510
-function timeStrToMinutes(str) {
-  const parts = (str || "08:00").split(":");
-  return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
-}
-
-// 510 -> "08:30"
-function minutesToTimeStr(mins) {
-  const h = Math.floor(mins / 60) % 24;
-  const m = mins % 60;
-  return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
-}
-
-// Baca jam pulang untuk posisi tertentu dari sheet DataPosisi. Default "20:00" kalau tidak ditemukan.
-function getJamPulangPosisi(posisi) {
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName("DataPosisi");
-  if (!sheet) return "20:00";
-  const values = sheet.getDataRange().getValues();
-  for (let i = 1; i < values.length; i++) {
-    if (values[i][0] && values[i][0].toString().trim() === posisi) {
-      return values[i][2] ? values[i][2].toString().trim() : "20:00";
-    }
-  }
-  return "20:00";
-}
-
-// Sisipkan baris baru persis di bawah header (row 2), bukan di paling bawah,
-// supaya data terbaru selalu di atas tanpa perlu scroll.
-function prependDataRow(sheet, rowValues) {
-  sheet.insertRowBefore(2);
-  sheet.getRange(2, 1, 1, rowValues.length).setValues([rowValues]);
-}
-
 function uploadImageToDrive(base64Data, filename) {
   if (!base64Data) return "";
   try {
@@ -187,9 +129,9 @@ function processForm(data) {
       imageUrl
     ]);
     
-    // Data_Absensi: Kolom (A - O): Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang, Keterangan Datang, Keterangan Pulang
+    // Data_Absensi: Kolom (A - M): Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang
     const sheetData = ss.getSheetByName("Data_Absensi");
-    prependDataRow(sheetData, [
+    sheetData.appendRow([
       tanggalStr,    // A. Tanggal
       data.nama,     // B. Nama
       data.posisi,   // C. Posisi
@@ -202,9 +144,7 @@ function processForm(data) {
       "-",           // J. Lokasi Datang
       "-",           // K. Lokasi Pulang
       imageUrl,      // L. Foto Datang (Bukti Izin)
-      "-",           // M. Foto Pulang
-      data.alasan || "-", // N. Keterangan Datang
-      "-"            // O. Keterangan Pulang
+      "-"            // M. Foto Pulang
     ]);
 
     return { status: "success", message: `Data ${jenisKeterangan} berhasil dicatat.` };
@@ -214,15 +154,11 @@ function processForm(data) {
   const dataRange = sheetData.getDataRange().getValues();
   let userRowIndex = -1;
   
-  // Cari absen hari ini untuk NAMA + OUTLET ini secara spesifik.
-  // Baris terbaru ada di paling atas (row 2), jadi loop dari atas ke bawah.
-  // Kunci pencarian disertakan "outlet" supaya pegawai bisa absen DATANG lagi
-  // di outlet lain di hari yang sama (mis. jadi backup shift di outlet berbeda)
-  // tanpa dianggap "sudah absen" oleh outlet asalnya.
-  // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom D (3) = Outlet, Kolom H (7) = Status Masuk
-  for (let i = 1; i < dataRange.length; i++) { 
+  // Cari absen hari ini munddur dari bawah
+  // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom H (7) = Status Masuk
+  for (let i = dataRange.length - 1; i > 0; i--) { 
     const rowTanggal = parseSheetDate(dataRange[i][0]);
-    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
+    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") { 
       userRowIndex = i + 1;
       break;
     }
@@ -233,29 +169,21 @@ function processForm(data) {
     if (userRowIndex !== -1 && dataRange[userRowIndex - 1][4] !== "-") { 
       return { status: "error", message: "Anda sudah melakukan absen DATANG hari ini." };
     }
-
-    // Cek telat & batas absen berdasarkan jam masuk posisi (DataPosisi) + toleransi (Settings!B7)
-    const jamMasukPosisi = getJamMasukPosisi(data.posisi);
-    const toleransiMenit = getToleransiTelat();
-    const jamMasukMenit = timeStrToMinutes(jamMasukPosisi);
-    const batasTelatMenit = jamMasukMenit + toleransiMenit;
+    
+    let statusMasuk = "TEPAT WAKTU";
     const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
-
-    if (minutes > batasTelatMenit) {
-      const batasStr = minutesToTimeStr(batasTelatMenit);
-      return {
-        status: "error",
-        message: `Absen DATANG ditolak. Batas absen untuk posisi ${data.posisi} adalah ${jamMasukPosisi} + toleransi ${toleransiMenit} menit (maksimal ${batasStr}). Silakan ajukan IZIN/SAKIT jika terlambat lebih dari batas ini.`
-      };
+    
+    if (data.posisi === "Admin" && minutes > 510) { // Lewat jam 08:30 (8*60+30)
+      statusMasuk = "TELAT";
+    } else if (data.posisi === "Pickup" && minutes >= 780) { // Lewat jam 13:00 (13*60)
+      statusMasuk = "TELAT";
     }
-
-    const statusMasuk = minutes > jamMasukMenit ? "TELAT" : "TEPAT WAKTU";
 
     const filename = "Masuk-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
     const imageUrl = uploadImageToDrive(data.image, filename);
     
-    // (A-O) Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang, Keterangan Datang, Keterangan Pulang
-    prependDataRow(sheetData, [
+    // (A-M) Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang
+    sheetData.appendRow([
       tanggalStr,   // A
       data.nama,    // B
       data.posisi,  // C
@@ -268,9 +196,7 @@ function processForm(data) {
       lokasiUrl,    // J (Lokasi Datang)
       "-",          // K (Lokasi Pulang)
       imageUrl,     // L
-      "-",          // M
-      data.alasan || "-", // N (Keterangan Datang, mis. alasan telat)
-      "-"           // O (Keterangan Pulang, diisi saat PULANG)
+      "-"           // M
     ]);
     
     return { status: "success", message: "Absen DATANG berhasil dicatat." };
@@ -307,18 +233,6 @@ function processForm(data) {
       }
     }
 
-    // Deteksi pulang cepat: bandingkan jam pulang aktual vs jadwal jam pulang posisi (DataPosisi).
-    // Tidak menimpa status LEMBUR yang sudah dihitung di atas.
-    if (statusPulang !== "LEMBUR") {
-      const jamPulangPosisi = getJamPulangPosisi(data.posisi);
-      const jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
-      const jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
-      if (jamSekarangMenit < jamPulangJadwalMenit) {
-        statusPulang = "PULANG CEPAT";
-      }
-    }
-    const keteranganPulang = (statusPulang === "PULANG CEPAT") ? (data.alasan || "-") : "-";
-
     const filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
     const imageUrl = uploadImageToDrive(data.image, filename);
     
@@ -328,7 +242,6 @@ function processForm(data) {
     sheetData.getRange(userRowIndex, 9).setValue(statusPulang);  // I (Status Pulang)
     sheetData.getRange(userRowIndex, 11).setValue(lokasiUrl);    // K (Lokasi Pulang)
     sheetData.getRange(userRowIndex, 13).setValue(imageUrl);     // M (Foto Pulang)
-    sheetData.getRange(userRowIndex, 15).setValue(keteranganPulang); // O (Keterangan Pulang)
     
     return { status: "success", message: "Absen PULANG berhasil dicatat." };
   }
@@ -370,10 +283,24 @@ function getSettings() {
       }
     }
   }
-  // Catatan: fallback lama yang membaca Settings!B4 sebagai daftar posisi sudah dihapus.
-  // Sel itu sekarang dipakai untuk "working_days" (bukan daftar posisi), jadi kalau
-  // dibaca sebagai posisi akan menghasilkan data sampah. Kalau sheet DataPosisi tidak
-  // ada/kosong, langsung pakai default di bawah ini.
+  if (positions.length === 0) {
+    const b4 = sheet.getRange("B4").getValue();
+    if (b4) {
+      try {
+        let parsed = JSON.parse(b4);
+        positions = parsed.map(function(p) {
+          if (typeof p === 'string') {
+            return { name: p, jamMasuk: "08:00", jamPulang: "20:00" };
+          }
+          return p;
+        });
+      } catch(e) {
+        positions = b4.toString().split(",").map(function(s) { 
+          return { name: s.trim(), jamMasuk: "08:00", jamPulang: "20:00" };
+        }).filter(function(p) { return p.name !== ""; });
+      }
+    }
+  }
   if (!positions || positions.length === 0) {
     positions = [
       { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00" },
@@ -404,7 +331,7 @@ function getSettings() {
     }
   }
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, outlets: outlets, positions: positions } };
 }
 
 function saveSettings(data) {
@@ -497,9 +424,7 @@ function getRiwayat(nama) {
   
   const riwayat = [];
   
-  // Baris terbaru ada di row 2 (paling atas), jadi loop dari atas ke bawah
-  // supaya "riwayat" tetap terurut dari yang terbaru.
-  for (let i = 1; i < values.length; i++) {
+  for (let i = values.length - 1; i > 0; i--) {
     if (values[i][1] === nama) {
       riwayat.push({
         tanggal: parseSheetDate(values[i][0]),
@@ -515,9 +440,7 @@ function getRiwayat(nama) {
         lokasiPulang: values[i][10],
         fotoDatang: values[i][11],
         fotoPulang: values[i][12],
-        keterangan: values[i][7] === "IZIN" ? "IZIN" : "HADIR",
-        keteranganDatang: values[i][13] || "-",
-        keteranganPulang: values[i][14] || "-"
+        keterangan: values[i][7] === "IZIN" ? "IZIN" : "HADIR"
       });
       if (riwayat.length >= 31) break; 
     }

@@ -248,6 +248,7 @@ export default function App() {
   const [jenisIzin, setJenisIzin] = useState<"Izin" | "Sakit">("Izin");
   const [alasan, setAlasan] = useState("");
   const [keteranganTelat, setKeteranganTelat] = useState("");
+  const [keteranganPulangCepat, setKeteranganPulangCepat] = useState("");
   
   const [imageBase64, setImageBase64] = useState("");
   const [loadingSubmit, setLoadingSubmit] = useState(false);
@@ -325,9 +326,12 @@ export default function App() {
 
   const fetchWithRetry = async (url: string, options?: RequestInit, retries = 2): Promise<Response> => {
     let lastErr: any;
+    // Safari/iOS nge-cache response fetch GET ke URL yang sama secara default,
+    // beda dari Chrome. Paksa no-store biar data (daftar pegawai, settings, dll) selalu fresh.
+    const finalOptions: RequestInit = { ...options, cache: 'no-store' };
     for (let i = 0; i <= retries; i++) {
       try {
-        const res = await fetch(url, options);
+        const res = await fetch(url, finalOptions);
         return res;
       } catch (err) {
         lastErr = err;
@@ -505,21 +509,38 @@ export default function App() {
   const checkIfLate = () => {
     if (keterangan !== "DATANG" || !posisi) return false;
     const now = new Date();
-    const hours = now.getHours();
-    const minutes = now.getMinutes();
-    const totalMinutes = hours * 60 + minutes;
+    const totalMinutes = now.getHours() * 60 + now.getMinutes();
 
+    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    const jamMasuk = posisiConfig?.jamMasuk || "08:00";
+    const [jm, mm] = jamMasuk.split(":").map(n => parseInt(n, 10) || 0);
+    const jamMasukMenit = jm * 60 + mm;
+    const toleransi = settingsData?.toleransiTelat ?? 30;
 
-    if (posisi === "Admin" || posisi === "Admin (Training)") {
-      return totalMinutes > 510; // > 08:30 (8 * 60 + 30)
-    } else if (posisi === "Pickup") {
-      return totalMinutes >= 780; // >= 13:00 (13 * 60)
-    }
-    return false;
+    // Cuma dipakai buat tampilan/validasi form (UX). Keputusan final (termasuk blokir
+    // kalau lewat toleransi) tetap di backend processForm, ini cuma biar konsisten.
+    return totalMinutes > jamMasukMenit && totalMinutes <= jamMasukMenit + toleransi;
   };
 
 
   const isLate = checkIfLate();
+
+  const checkIfEarlyLeave = () => {
+    if (keterangan !== "PULANG" || !posisi) return false;
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    const jamPulang = posisiConfig?.jamPulang || "20:00";
+    const [jp, mp] = jamPulang.split(":").map(n => parseInt(n, 10) || 0);
+    const jamPulangMenit = jp * 60 + mp;
+
+    // Sama seperti backend: lembur (>=13 jam kerja) sudah ditangani terpisah di sana,
+    // ini cuma buat munculin field alasan kalau pulang sebelum jadwal.
+    return totalMinutes < jamPulangMenit;
+  };
+
+  const isEarlyLeave = checkIfEarlyLeave();
 
 
   useEffect(() => {
@@ -1026,7 +1047,7 @@ export default function App() {
 
 
     try {
-      const res = await fetch(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`);
+      const res = await fetch(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`, { cache: 'no-store' });
       const data = await res.json();
       if (data.status === 'success') {
         const formattedData = data.data.map((r: any) => ({
@@ -1151,8 +1172,14 @@ export default function App() {
     }
 
 
-    if (keterangan === "DATANG" && absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") {
-      return toast.error("Anda sudah melakukan absen DATANG hari ini! Silakan pilih Aktivitas absensi PULANG.");
+    if (keterangan === "DATANG" && outlet) {
+      const sudahAbsenDiOutletIni = riwayat.some(r => {
+        if (!r.tanggal) return false;
+        return normalizeDateStr(r.tanggal) === normalizedToday && r.outlet === outlet && r.jamDatang && r.jamDatang !== "-";
+      });
+      if (sudahAbsenDiOutletIni) {
+        return toast.error("Anda sudah melakukan absen DATANG hari ini di outlet ini! Kalau backup shift di outlet lain, pilih outlet yang berbeda.");
+      }
     }
 
 
@@ -1160,6 +1187,7 @@ export default function App() {
       if (!outlet) return toast.error("Pilih Outlet tempat Anda absen!");
       if (!imageBase64) return toast.error("Silahkan ambil foto selfie bukti absensi!");
       if (isLate && !keteranganTelat) return toast.error("Harap isi keterangan alasan Anda telat!");
+      if (isEarlyLeave && !keteranganPulangCepat) return toast.error("Harap isi keterangan alasan Anda pulang cepat!");
     } else {
       if (!alasan) return toast.error("Alasan detail tidak boleh kosong!");
       if (!imageBase64) return toast.error("Harap lampirkan bukti foto (Surat dokter / bukti lainnya)!");
@@ -1182,7 +1210,7 @@ export default function App() {
             status: keterangan,
             jenisIzin: keterangan === "IZIN" ? jenisIzin : "",
             outlet: keterangan === "IZIN" ? "TIDAK MASUK" : outlet,
-            alasan: keterangan === "IZIN" ? alasan : (isLate ? keteranganTelat : ""),
+            alasan: keterangan === "IZIN" ? alasan : (isLate ? keteranganTelat : (isEarlyLeave ? keteranganPulangCepat : "")),
             lat: userLat,
             lng: userLng,
             image: imageBase64, // Always send image, either selfie or doctor note
@@ -1536,6 +1564,22 @@ export default function App() {
                       onChange={e => setKeteranganTelat(e.target.value)}
                       placeholder="Masukkan alasan keterlambatan..."
                       className="w-full p-2.5 bg-neutral-50 border border-red-300 rounded-md focus:ring-2 focus:ring-red-500 outline-none transition"
+                    />
+                  </div>
+                )}
+
+                {/* Alasan Pulang Cepat */}
+                {isEarlyLeave && (
+                  <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="block text-sm font-semibold text-neutral-700 mb-1">
+                      Keterangan Pulang Cepat <span className="text-red-500">*</span>
+                    </label>
+                    <input 
+                      type="text" 
+                      value={keteranganPulangCepat}
+                      onChange={e => setKeteranganPulangCepat(e.target.value)}
+                      placeholder="Masukkan alasan pulang cepat (mis. sakit, izin)..."
+                      className="w-full p-2.5 bg-neutral-50 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 outline-none transition"
                     />
                   </div>
                 )}
