@@ -33,10 +33,30 @@ export const resetStoredGasUrl = (): void => {
 export const parseApiResponse = async (res: Response, endpoint: string): Promise<any> => {
   const textData = await res.text();
   if (!textData || textData.trim().startsWith('<') || textData.includes('<!DOCTYPE') || textData.includes('<html')) {
-    const is404 = textData.includes('Halaman Tidak Ditemukan') || textData.includes('tidak dapat membuka file') || textData.includes('Page not found');
-    const msg = is404
-      ? `URL Web App Google Apps Script tidak dapat dibuka (404/File tidak ditemukan). Pastikan URL Web App benar dan di-deploy sebagai 'Anyone'.`
-      : `Google Apps Script mengembalikan respons HTML, bukan JSON valid (${endpoint}). Pastikan Web App di-deploy dengan opsi akses 'Anyone'.`;
+    // Cek penyebab spesifik respons HTML dari Google
+    if (res.status === 404 || textData.includes('Halaman Tidak Ditemukan') || textData.includes('Page not found')) {
+      throw new Error(`URL Web App tidak ditemukan (404). Pastikan URL Web App benar dan berakhiran '/exec'.`);
+    }
+    
+    if (textData.includes('accounts.google.com') || textData.includes('ServiceLogin') || textData.includes('Sign in')) {
+      throw new Error(`Akses Google Apps Script memerlukan login Google. Pastikan pada saat Deploy, opsi "Who has access" dipilih "Anyone" (Siapa saja).`);
+    }
+
+    if (textData.includes('Authorization is required') || textData.includes('izin otorisasi') || textData.includes('izin akses')) {
+      throw new Error(`Google Apps Script membutuhkan otorisasi akun. Silakan buka editor Apps Script dan jalankan salah satu fungsi (Review Permissions).`);
+    }
+
+    if (textData.includes('tidak dapat membuka file') || textData.includes('Unable to open the file')) {
+      throw new Error(`Google Drive / Apps Script terkendala saat mengakses file foto atau spreadsheet. Periksa ID Folder Google Drive dan pastikan kapasitas penyimpanan akun Google masih tersedia.`);
+    }
+
+    // Ambil cuplikan title HTML jika ada
+    const titleMatch = textData.match(/<title>([^<]*)<\/title>/i);
+    const pageTitle = titleMatch ? titleMatch[1].trim() : '';
+
+    const msg = pageTitle 
+      ? `Google Apps Script mengembalikan halaman: "${pageTitle}" (${endpoint}). Jika baru mengubah kode, pastikan klik Deploy > New deployment (versi baru).`
+      : `Google Apps Script mengembalikan respons HTML, bukan JSON valid (${endpoint}). Pastikan Web App di-deploy dengan versi baru dan opsi akses 'Anyone'.`;
     throw new Error(msg);
   }
 

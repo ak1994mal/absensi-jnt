@@ -340,16 +340,20 @@ function processForm(data) {
       return { status: "error", message: "Anda sudah absen PULANG hari ini." };
     }
     
-    // Jam Datang Kolom E (index 4)
-    let jamDatangStr = parseSheetTime(dataRange[userRowIndex - 1][4]);
+    // Jam Datang Kolom E (index 4) atau dari payload frontend
+    let rawJamDatang = (data && data.jamDatang) ? data.jamDatang : dataRange[userRowIndex - 1][4];
+    let jamDatang = parseSheetTime(rawJamDatang);
+    let jamDatangStr = (typeof jamDatang === "string") ? jamDatang : String(jamDatang || "-");
     
     let totalJamStr = "-";
     let statusPulang = "NORMAL";
     
-    if (jamDatangStr && jamDatangStr !== "-") {
+    if (jamDatangStr && jamDatangStr !== "-" && jamDatangStr.indexOf(":") !== -1) {
       const pDatang = jamDatangStr.split(":");
-      const hoursDiff = dateObj.getHours() - parseInt(pDatang[0]);
-      const minsDiff = dateObj.getMinutes() - parseInt(pDatang[1]);
+      const jamH = parseInt(pDatang[0], 10) || 0;
+      const jamM = parseInt(pDatang[1], 10) || 0;
+      const hoursDiff = dateObj.getHours() - jamH;
+      const minsDiff = dateObj.getMinutes() - jamM;
       
       let totalMins = (hoursDiff * 60) + minsDiff;
       if (totalMins < 0) totalMins = 0;
@@ -817,32 +821,34 @@ function parseSheetTime(val) {
   if (val === null || val === undefined || val === "") return "-";
   if (val === "-") return "-";
   
-  if (val instanceof Date) {
+  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]') {
     const hh = ("0" + val.getHours()).slice(-2);
     const mm = ("0" + val.getMinutes()).slice(-2);
     return hh + ":" + mm;
   } else if (typeof val === "number") {
     // Check if it's a fractional day (gas time format)
     let totalSeconds = Math.round(val * 24 * 60 * 60);
-    let h = Math.floor(totalSeconds / 3600);
+    let h = Math.floor(totalSeconds / 3600) % 24;
     let m = Math.floor((totalSeconds % 3600) / 60);
     return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
   } else if (typeof val === "string") {
-    if (val.includes("T") && !isNaN(Date.parse(val))) {
-      const d = new Date(val);
+    const s = val.trim();
+    if (s.includes("T") && !isNaN(Date.parse(s))) {
+      const d = new Date(s);
       const hh = ("0" + d.getHours()).slice(-2);
       const mm = ("0" + d.getMinutes()).slice(-2);
       return hh + ":" + mm;
     }
-    const match = val.match(/(\d{1,2}):(\d{2})/);
+    const match = s.match(/(\d{1,2}):(\d{2})/);
     if (match) {
       const hh = ("0" + match[1]).slice(-2);
       const mm = match[2];
       return hh + ":" + mm;
     }
+    return s;
   }
   
-  return String(val);
+  return String(val || "-");
 }
 
 function parseSheetDate(val) {

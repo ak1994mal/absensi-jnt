@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Globe, RefreshCw, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, X, ExternalLink } from 'lucide-react';
+import { Globe, RefreshCw, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, X, ExternalLink, Download, FileCode } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseApiResponse, DEFAULT_GAS_URL, BACKUP_LEGACY_GAS_URL } from '../api';
+import { KODE_GS_CODE } from '../kodeGsSource';
 
 interface GasUrlModalProps {
   isOpen: boolean;
@@ -21,6 +22,7 @@ export default function GasUrlModal({
   const [urlInput, setUrlInput] = useState(currentUrl);
   const [testing, setTesting] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [showScriptDetails, setShowScriptDetails] = useState(false);
 
   if (!isOpen) return null;
 
@@ -36,7 +38,7 @@ export default function GasUrlModal({
       const res = await fetch(`${trimmed}?action=getPegawai`, { cache: 'no-store' });
       const data = await parseApiResponse(res, 'testConnection');
       if (data && data.status === 'success') {
-        toast.success(`Koneksi berhasil! Terhubung dengan ${data.data?.length || 0} pegawai.`, { id: toastId });
+        toast.success(`Koneksi berhasil! Terhubung dengan ${data.data?.length || 0} pegawai terdaftar.`, { id: toastId });
       } else {
         toast.warning(`Terkoneksi namun server mengembalikan: ${data?.message || 'Unknown status'}`, { id: toastId });
       }
@@ -60,16 +62,32 @@ export default function GasUrlModal({
   };
 
   const handleCopyKodeGs = () => {
-    const info = `File backend Kode.gs ada di project ini. Anda dapat menyalin isinya dan menempelkannya di editor Google Apps Script (script.google.com). Setelah itu klik: Deploy > New deployment > Web app > Execute as: Me > Who has access: Anyone.`;
-    navigator.clipboard.writeText(info);
-    setCopiedCode(true);
-    toast.success("Petunjuk deploy disalin ke clipboard!");
-    setTimeout(() => setCopiedCode(false), 2500);
+    try {
+      navigator.clipboard.writeText(KODE_GS_CODE);
+      setCopiedCode(true);
+      toast.success("✅ Seluruh kode Kode.gs berhasil disalin! Silakan tempel di script.google.com");
+      setTimeout(() => setCopiedCode(false), 3000);
+    } catch (e) {
+      toast.error("Gagal menyalin kode secara otomatis.");
+    }
+  };
+
+  const handleDownloadKodeGs = () => {
+    const blob = new Blob([KODE_GS_CODE], { type: "text/javascript" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "Kode.gs";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success("File Kode.gs berhasil diunduh!");
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-neutral-200">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden border border-neutral-200 my-auto">
         <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/50">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-red-100 text-[#cc0000] rounded-lg">
@@ -77,7 +95,7 @@ export default function GasUrlModal({
             </div>
             <div>
               <h3 className="font-bold text-neutral-800 text-base">Konfigurasi Google Apps Script</h3>
-              <p className="text-xs text-neutral-500">Koneksi data absensi dan Google Spreadsheet</p>
+              <p className="text-xs text-neutral-500">Koneksi data absensi dan backend Google Spreadsheet</p>
             </div>
           </div>
           <button
@@ -88,13 +106,60 @@ export default function GasUrlModal({
           </button>
         </div>
 
-        <div className="p-6 flex flex-col gap-4">
-          <div className="text-xs text-neutral-600 leading-relaxed bg-blue-50 border border-blue-100 p-3 rounded-xl">
-            <span className="font-bold text-blue-900 block mb-1">Cara Mendapatkan URL Web App:</span>
-            1. Buka script Google Apps Script Anda di <span className="font-mono font-semibold">script.google.com</span>.<br/>
-            2. Klik <b>Deploy</b> &rarr; <b>Manage deployments</b> (atau <b>New deployment</b>).<br/>
-            3. Pastikan jenisnya <b>Web app</b>, <i>Execute as: Me</i>, dan <i>Who has access: <b>Anyone</b></i>.<br/>
-            4. Salin URL Web App yang berakhiran <span className="font-mono font-semibold">/exec</span> dan tempel di bawah.
+        <div className="p-6 flex flex-col gap-4 max-h-[75vh] overflow-y-auto">
+          {/* Card Panduan Deploy & Solusi Bug */}
+          <div className="text-xs text-neutral-700 leading-relaxed bg-amber-50 border border-amber-200 p-3.5 rounded-xl space-y-2">
+            <div className="flex items-center gap-1.5 font-bold text-amber-900">
+              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>Panduan Mengatasi Bug & Deploy Ulang:</span>
+            </div>
+            <ul className="list-disc list-inside space-y-1 text-amber-950/85">
+              <li>
+                <b>Bug jamDatang.split is not a function</b> terjadi jika skrip backend lama mem-parse waktu spreadsheet sebagai objek Date. Frontend sekarang sudah otomatis mengirim jam datang yang aman, dan skrip terbaru di bawah sudah kebal terhadap tipe data apa pun.
+              </li>
+              <li>
+                <b>Penting saat deploy:</b> Di script.google.com, klik <b>Deploy</b> &rarr; <b>New deployment</b> (wajib versi baru, bukan sekadar Save).
+              </li>
+              <li>
+                Pilih type <b>Web app</b>, <i>Execute as: <b>Me</b></i>, dan <i>Who has access: <b>Anyone</b></i>.
+              </li>
+              <li>
+                Gunakan URL berakhiran <b>/exec</b> (jangan gunakan URL /dev).
+              </li>
+            </ul>
+          </div>
+
+          {/* Tombol Salin / Unduh Script Kode.gs */}
+          <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 flex flex-col gap-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileCode className="w-4 h-4 text-[#cc0000]" />
+                <span className="text-xs font-bold text-neutral-800">Kode Backend Terbaru (Kode.gs)</span>
+              </div>
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">Bebas Bug</span>
+            </div>
+            <p className="text-[11px] text-neutral-500 leading-relaxed">
+              Jika Anda baru saja mengedit skrip Google Spreadsheet, salin kode terbaru ini ke Google Apps Script Anda untuk menjamin bebas error.
+            </p>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleCopyKodeGs}
+                className="flex-1 px-3 py-2 bg-neutral-800 hover:bg-neutral-900 text-white text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5"
+              >
+                {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedCode ? "Tersalin ke Clipboard!" : "Salin Kode.gs Lengkap"}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadKodeGs}
+                className="px-3 py-2 bg-white hover:bg-neutral-100 border border-neutral-300 text-neutral-700 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5"
+                title="Download file Kode.gs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Unduh .gs
+              </button>
+            </div>
           </div>
 
           <div>
@@ -106,7 +171,7 @@ export default function GasUrlModal({
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
                 placeholder="https://script.google.com/macros/s/.../exec"
-                rows={3}
+                rows={2}
                 className="w-full text-xs font-mono p-3 border border-neutral-300 rounded-xl focus:ring-2 focus:ring-[#cc0000] focus:border-red-500 outline-none transition"
               />
               <div className="flex items-center justify-between gap-2">
@@ -155,7 +220,7 @@ export default function GasUrlModal({
               onClick={onClose}
               className="px-4 py-2 bg-neutral-200 hover:bg-neutral-300 text-neutral-700 text-xs font-bold rounded-xl transition"
             >
-              Batal
+              Tutup
             </button>
             <button
               type="button"

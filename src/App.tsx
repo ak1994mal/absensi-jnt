@@ -1432,6 +1432,22 @@ export default function App() {
     const sendPayload = async (userLat: number, userLng: number) => {
         setSubmitStatus("Mengirim data absensi ke sistem...");
         toast.info("⏳ Mengirim data absen, mohon tunggu...");
+
+        // Dapatkan jam datang jika status PULANG untuk mencegah TypeError: jamDatang.split is not a function di backend
+        let jamDatangTerdata = "";
+        if (keterangan === "PULANG") {
+          if (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") {
+            jamDatangTerdata = String(absenHariIni.jamDatang).trim();
+          } else {
+            const rowHariIni = riwayat.find(r => 
+              r.tanggal && normalizeDateStr(r.tanggal) === normalizedToday && 
+              r.jamDatang && r.jamDatang !== "-"
+            );
+            if (rowHariIni?.jamDatang) {
+              jamDatangTerdata = String(rowHariIni.jamDatang).trim();
+            }
+          }
+        }
         
         const payload = {
           action: "processForm",
@@ -1445,7 +1461,8 @@ export default function App() {
             lat: userLat,
             lng: userLng,
             image: imageBase64, // Always send image, either selfie or doctor note
-            buktiFeishu: ""
+            buktiFeishu: "",
+            jamDatang: jamDatangTerdata
           }
         };
 
