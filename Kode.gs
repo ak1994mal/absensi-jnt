@@ -88,6 +88,41 @@ function getToleransiTelat() {
   return isNaN(num) ? 30 : num;
 }
 
+// Baca status aktif aturan jam masuk/pulang dari sheet Settings!B8. Default true.
+function getEnableWorkHours(ss) {
+  try {
+    const sheet = (ss || getSpreadsheet()).getSheetByName("Settings");
+    if (!sheet) return true;
+    const val = sheet.getRange("B8").getValue();
+    if (val === "" || val === null || val === undefined) return true;
+    return val === true || val === "TRUE" || val === "true";
+  } catch (e) {
+    return true;
+  }
+}
+
+// Cek apakah jam kerja (masuk/pulang) aktif untuk posisi tertentu
+function isPosisiHoursEnabled(posisi, ss) {
+  try {
+    if (!getEnableWorkHours(ss)) return false;
+    const sheet = (ss || getSpreadsheet()).getSheetByName("DataPosisi");
+    if (!sheet) return true;
+    const values = sheet.getDataRange().getValues();
+    const target = (posisi || "").toString().trim().toLowerCase();
+    for (let i = 1; i < values.length; i++) {
+      const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+      if (rowPos === target) {
+        const statusVal = values[i][3];
+        if (statusVal === "" || statusVal === null || statusVal === undefined) return true;
+        return statusVal === true || statusVal === "TRUE" || statusVal === "true" || statusVal === "ON" || statusVal === "on";
+      }
+    }
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
 // Baca jam masuk untuk posisi tertentu dari sheet DataPosisi. Default "08:00" kalau tidak ditemukan.
 function getJamMasukPosisi(posisi) {
   const ss = getSpreadsheet();
@@ -249,22 +284,28 @@ function processForm(data) {
       return { status: "error", message: "Anda sudah melakukan absen DATANG hari ini." };
     }
 
-    // Cek telat & batas absen berdasarkan jam masuk posisi (DataPosisi) + toleransi (Settings!B7)
-    const jamMasukPosisi = getJamMasukPosisi(data.posisi);
-    const toleransiMenit = getToleransiTelat();
-    const jamMasukMenit = timeStrToMinutes(jamMasukPosisi);
-    const batasTelatMenit = jamMasukMenit + toleransiMenit;
-    const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
+    // Cek apakah jam kerja aktif (berdasarkan master toggle Settings!B8 dan status posisi DataPosisi)
+    const isHoursActive = isPosisiHoursEnabled(data.posisi, ss);
 
-    if (minutes > batasTelatMenit) {
-      const batasStr = minutesToTimeStr(batasTelatMenit);
-      return {
-        status: "error",
-        message: `Absen DATANG ditolak. Batas absen untuk posisi ${data.posisi} adalah ${jamMasukPosisi} + toleransi ${toleransiMenit} menit (maksimal ${batasStr}). Silakan ajukan IZIN/SAKIT jika terlambat lebih dari batas ini.`
-      };
+    let statusMasuk = "TEPAT WAKTU";
+    if (isHoursActive) {
+      // Cek telat & batas absen berdasarkan jam masuk posisi (DataPosisi) + toleransi (Settings!B7)
+      const jamMasukPosisi = getJamMasukPosisi(data.posisi);
+      const toleransiMenit = getToleransiTelat();
+      const jamMasukMenit = timeStrToMinutes(jamMasukPosisi);
+      const batasTelatMenit = jamMasukMenit + toleransiMenit;
+      const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
+
+      if (minutes > batasTelatMenit) {
+        const batasStr = minutesToTimeStr(batasTelatMenit);
+        return {
+          status: "error",
+          message: `Absen DATANG ditolak. Batas absen untuk posisi ${data.posisi} adalah ${jamMasukPosisi} + toleransi ${toleransiMenit} menit (maksimal ${batasStr}). Silakan ajukan IZIN/SAKIT jika terlambat lebih dari batas ini.`
+        };
+      }
+
+      statusMasuk = minutes > jamMasukMenit ? "TELAT" : "TEPAT WAKTU";
     }
-
-    const statusMasuk = minutes > jamMasukMenit ? "TELAT" : "TEPAT WAKTU";
 
     const filename = "Masuk-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
     const imageUrl = uploadImageToDrive(data.image, filename);
@@ -323,8 +364,8 @@ function processForm(data) {
     }
 
     // Deteksi pulang cepat: bandingkan jam pulang aktual vs jadwal jam pulang posisi (DataPosisi).
-    // Tidak menimpa status LEMBUR yang sudah dihitung di atas.
-    if (statusPulang !== "LEMBUR") {
+    // Hanya jika aturan jam kerja aktif dan tidak sedang lembur.
+    if (statusPulang !== "LEMBUR" && isPosisiHoursEnabled(data.posisi, ss)) {
       const jamPulangPosisi = getJamPulangPosisi(data.posisi);
       const jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
       const jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
@@ -368,6 +409,13 @@ function getSettings() {
     requireLocation = requireLocationVal === true || requireLocationVal === "TRUE" || requireLocationVal === "true";
   }
 
+  // Mengambil enableWorkHours dari B8 (Row 8, Column 2)
+  let enableWorkHours = true; // default true
+  const enableWorkHoursVal = sheet.getRange("B8").getValue();
+  if (enableWorkHoursVal !== "") {
+    enableWorkHours = enableWorkHoursVal === true || enableWorkHoursVal === "TRUE" || enableWorkHoursVal === "true";
+  }
+
   // Mengambil data posisi
   let positions = [];
   let sheetPosisi = ss.getSheetByName("DataPosisi");
@@ -377,10 +425,13 @@ function getSettings() {
       if (pValues[i][0]) {
         let jamMasuk = parseSheetTime(pValues[i][1]);
         let jamPulang = parseSheetTime(pValues[i][2]);
+        let enabledVal = pValues[i][3];
+        let enabled = enabledVal === "" || enabledVal === null || enabledVal === undefined || enabledVal === true || enabledVal === "TRUE" || enabledVal === "true" || enabledVal === "ON" || enabledVal === "on";
         positions.push({
           name: pValues[i][0].toString().trim(),
           jamMasuk: (jamMasuk && jamMasuk !== "-") ? jamMasuk : "08:00",
-          jamPulang: (jamPulang && jamPulang !== "-") ? jamPulang : "20:00"
+          jamPulang: (jamPulang && jamPulang !== "-") ? jamPulang : "20:00",
+          enabled: enabled
         });
       }
     }
@@ -391,10 +442,10 @@ function getSettings() {
   // ada/kosong, langsung pakai default di bawah ini.
   if (!positions || positions.length === 0) {
     positions = [
-      { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00" },
-      { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00" },
-      { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00" },
-      { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00" }
+      { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+      { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+      { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00", enabled: true },
+      { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00", enabled: true }
     ];
   }
   
@@ -419,7 +470,7 @@ function getSettings() {
     }
   }
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
 }
 
 function saveSettings(data) {
@@ -434,26 +485,33 @@ function saveSettings(data) {
     sheet.getRange("B3").setValue(data.requireLocation ? "TRUE" : "FALSE");
   }
 
+  // Set enableWorkHours ke B8
+  if (data.enableWorkHours !== undefined) {
+    sheet.getRange("B8").setValue(data.enableWorkHours ? "TRUE" : "FALSE");
+  }
+
   // Update positions if provided
   if (data.positions && Array.isArray(data.positions)) {
     let sheetPosisi = ss.getSheetByName("DataPosisi");
     if (!sheetPosisi) {
       sheetPosisi = ss.insertSheet("DataPosisi");
     }
-    sheetPosisi.getRange(1, 1, 1, 3).setValues([["Nama Posisi", "Jam Masuk", "Jam Pulang"]]);
+    sheetPosisi.getRange(1, 1, 1, 4).setValues([["Nama Posisi", "Jam Masuk", "Jam Pulang", "Status Jam"]]);
     const lastRow = sheetPosisi.getLastRow();
     if (lastRow > 1) {
-      sheetPosisi.getRange(2, 1, lastRow - 1, 3).clearContent();
+      sheetPosisi.getRange(2, 1, lastRow - 1, 4).clearContent();
     }
     data.positions.forEach(function(pos, idx) {
       if (pos) {
         let name = typeof pos === 'string' ? pos.trim() : (pos.name || "").trim();
         let jamMasuk = typeof pos === 'object' && pos.jamMasuk ? pos.jamMasuk : "08:00";
         let jamPulang = typeof pos === 'object' && pos.jamPulang ? pos.jamPulang : "20:00";
+        let isEnabled = typeof pos === 'object' && pos.enabled !== undefined ? (pos.enabled ? "TRUE" : "FALSE") : "TRUE";
         if (name) {
           sheetPosisi.getRange(idx + 2, 1).setValue(name);
           sheetPosisi.getRange(idx + 2, 2).setValue(jamMasuk);
           sheetPosisi.getRange(idx + 2, 3).setValue(jamPulang);
+          sheetPosisi.getRange(idx + 2, 4).setValue(isEnabled);
         }
       }
     });

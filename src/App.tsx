@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
+import GasUrlModal from './components/GasUrlModal';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-
-
-const GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
+import { DEFAULT_GAS_URL, getStoredGasUrl, setStoredGasUrl, resetStoredGasUrl, parseApiResponse } from './api';
 
 
 const getMapEmbedUrl = (url?: string) => {
@@ -152,13 +151,14 @@ export type PositionConfig = {
   name: string;
   jamMasuk: string;
   jamPulang: string;
+  enabled?: boolean;
 };
 
 export const DEFAULT_POSITIONS: PositionConfig[] = [
-  { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00" },
-  { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00" },
-  { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00" },
-  { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00" }
+  { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+  { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+  { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00", enabled: true },
+  { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00", enabled: true }
 ];
 
 export const cleanTimeString = (val: any, fallback: string = "08:00"): string => {
@@ -242,6 +242,37 @@ export default function App() {
   });
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerLoginError, setOwnerLoginError] = useState("");
+
+  // Dynamic Google Apps Script Web App URL state & modal controls
+  const [gasUrl, setGasUrl] = useState<string>(() => getStoredGasUrl());
+  const [showGasUrlModal, setShowGasUrlModal] = useState(false);
+  const GAS_URL = gasUrl;
+
+  const handleSaveGasUrl = (newUrl: string) => {
+    setStoredGasUrl(newUrl);
+    setGasUrl(newUrl);
+    setShowGasUrlModal(false);
+    toast.success("URL Web App berhasil disimpan.");
+    setTimeout(() => {
+      fetchPegawai();
+      fetchSettings();
+      if (activeTab === 'owner') {
+        if (ownerView === 'harian') fetchRingkasanHarian();
+        if (ownerView === 'bulanan') fetchLaporanBulanan(laporanBulan);
+      }
+    }, 150);
+  };
+
+  const handleResetGasUrl = () => {
+    resetStoredGasUrl();
+    setGasUrl(DEFAULT_GAS_URL);
+    setShowGasUrlModal(false);
+    toast.info("URL Web App dikembalikan ke default.");
+    setTimeout(() => {
+      fetchPegawai();
+      fetchSettings();
+    }, 150);
+  };
 
   // Keep activeTab persisted
   useEffect(() => {
@@ -329,12 +360,13 @@ export default function App() {
   const availablePositions: PositionConfig[] = (settingsData?.positions && Array.isArray(settingsData.positions) && settingsData.positions.length > 0)
     ? settingsData.positions.map((p: any) => {
         if (typeof p === 'string') {
-          return { name: p, jamMasuk: "08:00", jamPulang: "20:00" };
+          return { name: p, jamMasuk: "08:00", jamPulang: "20:00", enabled: true };
         }
         return {
           name: p.name || "",
           jamMasuk: cleanTimeString(p.jamMasuk, "08:00"),
-          jamPulang: cleanTimeString(p.jamPulang, "20:00")
+          jamPulang: cleanTimeString(p.jamPulang, "20:00"),
+          enabled: p.enabled !== false && p.enabled !== 'FALSE' && p.enabled !== 'false'
         };
       })
     : DEFAULT_POSITIONS;
@@ -523,10 +555,18 @@ export default function App() {
 
   const checkIfLate = () => {
     if (keterangan !== "DATANG" || !posisi) return false;
+
+    // Cek toggle master aturan jam masuk & pulang
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+    if (!workHoursActive) return false;
+
+    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    if (posisiConfig && posisiConfig.enabled === false) return false;
+
     const now = new Date();
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
 
-    const posisiConfig = availablePositions.find(p => p.name === posisi);
     const jamMasuk = posisiConfig?.jamMasuk || "08:00";
     const [jm, mm] = jamMasuk.split(":").map(n => parseInt(n, 10) || 0);
     const jamMasukMenit = jm * 60 + mm;
@@ -542,10 +582,18 @@ export default function App() {
 
   const checkIfEarlyLeave = () => {
     if (keterangan !== "PULANG" || !posisi) return false;
+
+    // Cek toggle master aturan jam masuk & pulang
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+    if (!workHoursActive) return false;
+
+    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    if (posisiConfig && posisiConfig.enabled === false) return false;
+
     const now = new Date();
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
 
-    const posisiConfig = availablePositions.find(p => p.name === posisi);
     const jamPulang = posisiConfig?.jamPulang || "20:00";
     const [jp, mp] = jamPulang.split(":").map(n => parseInt(n, 10) || 0);
     const jamPulangMenit = jp * 60 + mp;
@@ -578,20 +626,14 @@ export default function App() {
 
       console.log(`[fetchPegawai] Mengirim request ke: ${GAS_URL}?action=getPegawai`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getPegawai`);
-      const textData = await res.text();
-      console.log(`[fetchPegawai] Response raw text:`, textData);
-      
-      let data;
-      try {
-        data = JSON.parse(textData);
-      } catch (parseErr) {
-        console.error(`[fetchPegawai] JSON Parse Error. Response bukan JSON yang valid. Pastikan URL Web App benar dan di-deploy sebagai 'Anyone'. Raw:`, textData);
-        throw new Error("Format respons dari server tidak valid (Bukan JSON). Periksa URL App Script Anda.");
-      }
+      const data = await parseApiResponse(res, 'getPegawai');
 
       if (data.status === 'success') {
         console.log(`[fetchPegawai] Berhasil mendapatkan data pegawai:`, data.data);
         setDaftarPegawai(data.data);
+        try {
+          localStorage.setItem("cached_pegawai", JSON.stringify(data.data));
+        } catch (e) {}
         setErrorNames("");
       } else {
         console.error(`[fetchPegawai] Error dari server:`, data.message);
@@ -600,8 +642,19 @@ export default function App() {
     } catch (err: any) {
       console.error(`[fetchPegawai] Kesalahan jaringan atau fetch:`, err);
       setErrorNames(`Gagal memuat daftar pegawai: ${err?.message}`);
-      // Fallback for preview
-      setDaftarPegawai(["Fitri Fajria (Preview offline)", "Mohammad Danang (Preview offline)"]);
+      // Coba ambil dari offline cache terlebih dahulu
+      try {
+        const cached = localStorage.getItem("cached_pegawai");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setDaftarPegawai(parsed);
+            return;
+          }
+        }
+      } catch (e) {}
+      // Fallback preview
+      setDaftarPegawai(["Mohammad Danang", "Bambang", "Fitri Fajria", "Irma Damayanti", "M. Hari Yanto"]);
     } finally {
       setLoadingNames(false);
     }
@@ -631,25 +684,18 @@ export default function App() {
     try {
       console.log(`[fetchRiwayat] Mendapatkan riwayat untuk ${pegawaiName} bulan ${bulan}...`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`);
-      const textData = await res.text();
-      console.log(`[fetchRiwayat] Response raw text:`, textData);
-      
-      let data;
-      try {
-        data = JSON.parse(textData);
-      } catch (e) {
-        throw new Error("Gagal mem-parsing riwayat. Periksa koneksi atau URL GAS.");
-      }
+      const data = await parseApiResponse(res, 'getRiwayatBulan');
       
       if (data.status === 'success') {
         console.log(`[fetchRiwayat] Sukses mendapatkan ${data.data?.length} baris riwayat.`);
-        const formattedData = data.data.map((r: any) => ({
+        const formattedData = (data.data || []).map((r: any) => ({
           ...r,
           tanggal: formatSheetDate(r.tanggal),
           jamDatang: formatSheetTime(r.jamDatang),
           jamPulang: formatSheetTime(r.jamPulang),
         }));
         setRiwayat(formattedData);
+        setErrorRiwayat("");
       } else {
         console.error(`[fetchRiwayat] Error dari server: ${data.message}`);
         throw new Error(data.message || 'Unknown error');
@@ -657,7 +703,6 @@ export default function App() {
     } catch (e: any) {
       console.error(`[fetchRiwayat] Kesalahan:`, e);
       setErrorRiwayat(`Gagal memuat riwayat: ${e?.message}`);
-      toast.error(`Gagal memuat riwayat: ${e.message}`);
     } finally {
       setLoadingRiwayat(false);
     }
@@ -709,19 +754,21 @@ export default function App() {
     try {
       console.log(`[fetchRingkasanHarian] Memuat ringkasan hari ini...`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian`);
-      const textData = await res.text();
-      console.log(`[fetchRingkasanHarian] Response raw text:`, textData);
+      const data = await parseApiResponse(res, 'getRingkasanHarian');
       
-      let data = JSON.parse(textData);
       if (data.status === 'success') {
         console.log(`[fetchRingkasanHarian] Berhasil mendapat ${data.data?.length} ringkasan harian.`);
-        const formattedData = data.data.map((r: any) => ({
+        const formattedData = (data.data || []).map((r: any) => ({
           ...r,
           tanggal: formatSheetDate(r.tanggal),
           jamDatang: formatSheetTime(r.jamDatang),
           jamPulang: formatSheetTime(r.jamPulang),
         }));
         setRingkasanHarian(formattedData);
+        try {
+          localStorage.setItem("cached_ringkasan_harian", JSON.stringify(formattedData));
+        } catch (e) {}
+        setErrorRingkasan("");
       } else {
         console.error(`[fetchRingkasanHarian] Server Error: ${data.message}`);
         throw new Error(data.message || 'Unknown error');
@@ -729,9 +776,16 @@ export default function App() {
     } catch (e: any) {
       console.error(`[fetchRingkasanHarian] Error:`, e);
       setErrorRingkasan(`Gagal memuat ringkasan harian: ${e.message}`);
-      // if (activeTab === 'monitoring') { // Actually 'owner' now
-      //   toast.error(`Gagal memuat ringkasan harian: ${e.message}`);
-      // }
+      // Coba load offline cache
+      try {
+        const cached = localStorage.getItem("cached_ringkasan_harian");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setRingkasanHarian(parsed);
+          }
+        }
+      } catch (err) {}
     } finally {
       setLoadingRingkasan(false);
     }
@@ -794,14 +848,13 @@ export default function App() {
     try {
       console.log(`[fetchLaporanBulanan] Memuat laporan untuk bulan ${bulan}...`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getLaporanBulanan&bulan=${bulan}`);
-      const textData = await res.text();
-      console.log(`[fetchLaporanBulanan] Response raw text:`, textData);
+      const data = await parseApiResponse(res, 'getLaporanBulanan');
       
-      let data = JSON.parse(textData);
       if (data.status === 'success') {
         console.log(`[fetchLaporanBulanan] Berhasil mendapatkan laporan ${data.data?.length} pegawai.`);
-        setLaporanBulanan(data.data);
+        setLaporanBulanan(data.data || []);
         setLaporanBulananOutlet(data.dataOutlet || []);
+        setErrorLaporan("");
       } else {
         console.error(`[fetchLaporanBulanan] Server Error: ${data.message}`);
         throw new Error(data.message || 'Unknown error');
@@ -820,11 +873,15 @@ export default function App() {
     const rawReq = settingsData?.requireLocation;
     const currentIsRequired = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
     const newStatus = !currentIsRequired;
+
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
     
     // Update locally first for instant feedback (persisting to localStorage)
     const updatedSettings = {
       ...settingsData,
-      requireLocation: newStatus
+      requireLocation: newStatus,
+      enableWorkHours: workHoursActive
     };
     setSettingsData(updatedSettings);
     try {
@@ -841,17 +898,74 @@ export default function App() {
     try {
       const payload = {
         action: 'saveSettings',
-        data: { requireLocation: newStatus }
+        data: { 
+          requireLocation: newStatus,
+          enableWorkHours: workHoursActive,
+          outlets: settingsData?.outlets || [],
+          positions: availablePositions
+        }
       };
       const response = await fetch(GAS_URL, {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
+      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Pengaturan lokasi berhasil disimpan.", { id: loadingToastId });
       } else {
-        toast.error(`Gagal menyimpan (pastikan Kode.gs diperbarui): ${result.message}`, { id: loadingToastId });
+        toast.error(`Gagal menyimpan: ${result.message}`, { id: loadingToastId });
+      }
+    } catch (e: any) {
+        toast.error(`Error menyimpan pengaturan: ${e.message}`, { id: loadingToastId });
+    } finally {
+        setSavingSettings(false);
+    }
+  };
+
+  const toggleWorkHours = async () => {
+    const rawHours = settingsData?.enableWorkHours;
+    const currentIsActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+    const newStatus = !currentIsActive;
+
+    const rawReq = settingsData?.requireLocation;
+    const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+
+    const updatedSettings = {
+      ...settingsData,
+      enableWorkHours: newStatus,
+      requireLocation: isCurrentlyReq
+    };
+    setSettingsData(updatedSettings);
+    try {
+      localStorage.setItem("settingsData_offline", JSON.stringify(updatedSettings));
+    } catch (e) {}
+
+    if (!GAS_URL) {
+      toast.success(`Aturan jam masuk/pulang berhasil ${newStatus ? 'diaktifkan' : 'dinonaktifkan'} (Mode Preview).`);
+      return;
+    }
+
+    setSavingSettings(true);
+    const loadingToastId = toast.loading("Menyimpan pengaturan jam kerja...");
+    try {
+      const payload = {
+        action: 'saveSettings',
+        data: { 
+          requireLocation: isCurrentlyReq,
+          enableWorkHours: newStatus,
+          outlets: settingsData?.outlets || [],
+          positions: availablePositions
+        }
+      };
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      const result = await parseApiResponse(response, 'saveSettings');
+      if (result.status === "success") {
+        toast.success(`Aturan jam masuk/pulang berhasil ${newStatus ? 'diaktifkan' : 'dinonaktifkan'}.`, { id: loadingToastId });
+      } else {
+        toast.error(`Gagal menyimpan: ${result.message}`, { id: loadingToastId });
       }
     } catch (e: any) {
         toast.error(`Error menyimpan pengaturan: ${e.message}`, { id: loadingToastId });
@@ -864,10 +978,14 @@ export default function App() {
     const rawReq = settingsData?.requireLocation;
     const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
 
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+
     // Update locally first for instant feedback (persisting to localStorage)
     const updatedSettings = {
       ...settingsData,
       requireLocation: isCurrentlyReq,
+      enableWorkHours: workHoursActive,
       outlets: updatedOutlets
     };
     setSettingsData(updatedSettings);
@@ -887,14 +1005,16 @@ export default function App() {
         action: 'saveSettings',
         data: { 
           requireLocation: isCurrentlyReq,
-          outlets: updatedOutlets 
+          enableWorkHours: workHoursActive,
+          outlets: updatedOutlets,
+          positions: availablePositions
         }
       };
       const response = await fetch(GAS_URL, {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
+      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Koordinat outlet berhasil disimpan ke Google Sheets.", { id: loadingToastId });
       } else {
@@ -911,9 +1031,13 @@ export default function App() {
     const rawReq = settingsData?.requireLocation;
     const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
 
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+
     const updatedSettings = {
       ...settingsData,
       requireLocation: isCurrentlyReq,
+      enableWorkHours: workHoursActive,
       positions: updatedPositions
     };
     setSettingsData(updatedSettings);
@@ -933,6 +1057,7 @@ export default function App() {
         action: 'saveSettings',
         data: { 
           requireLocation: isCurrentlyReq,
+          enableWorkHours: workHoursActive,
           outlets: settingsData?.outlets || [],
           positions: updatedPositions
         }
@@ -941,7 +1066,7 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
+      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Daftar posisi berhasil disimpan ke Google Sheets.", { id: loadingToastId });
       } else {
@@ -952,6 +1077,16 @@ export default function App() {
     } finally {
         setSavingSettings(false);
     }
+  };
+
+  const handleTogglePositionHours = (idx: number) => {
+    const updated = [...availablePositions];
+    const currentEnabled = updated[idx].enabled !== false;
+    updated[idx] = {
+      ...updated[idx],
+      enabled: !currentEnabled
+    };
+    handleUpdatePositions(updated);
   };
 
   const handleAddPosisi = () => {
@@ -965,7 +1100,7 @@ export default function App() {
       return;
     }
 
-    const updated = [...availablePositions, { name: trimmed, jamMasuk: "08:00", jamPulang: "20:00" }];
+    const updated = [...availablePositions, { name: trimmed, jamMasuk: "08:00", jamPulang: "20:00", enabled: true }];
     setNewPosisiInput("");
     handleUpdatePositions(updated);
     toast.success(`Posisi "${trimmed}" berhasil ditambahkan.`);
@@ -1015,20 +1150,21 @@ export default function App() {
     try {
       console.log(`[fetchSettings] Memuat pengaturan...`);
       const res = await fetchWithRetry(`${GAS_URL}?action=getSettings`);
-      const textData = await res.text();
-      console.log(`[fetchSettings] Response raw text:`, textData);
-      let data = JSON.parse(textData);
+      const data = await parseApiResponse(res, 'getSettings');
       if (data.status === 'success') {
         const d = data.data || {};
         const rawReq = d.requireLocation;
         d.requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+        const rawHours = d.enableWorkHours;
+        d.enableWorkHours = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
         if (!d.positions || !Array.isArray(d.positions) || d.positions.length === 0) {
           d.positions = DEFAULT_POSITIONS;
         } else {
           d.positions = d.positions.map((p: any) => ({
             name: typeof p === 'string' ? p : p.name,
             jamMasuk: cleanTimeString(p.jamMasuk, "08:00"),
-            jamPulang: cleanTimeString(p.jamPulang, "20:00")
+            jamPulang: cleanTimeString(p.jamPulang, "20:00"),
+            enabled: p.enabled !== false && p.enabled !== 'FALSE' && p.enabled !== 'false'
           }));
         }
         setSettingsData(d);
@@ -1038,12 +1174,23 @@ export default function App() {
         if (d.favicon) {
           updateFavicon(d.favicon);
         }
+        setErrorSettings("");
       } else {
         throw new Error(data.message || 'Unknown error fetching settings');
       }
     } catch (e: any) {
       console.error(`[fetchSettings] Error:`, e);
-      setErrorSettings(`Gagal memuat pengaturan: ${e.message}`);
+      setErrorSettings(`Gagal memuat pengaturan dari server: ${e.message}`);
+      // Tetap gunakan pengaturan offline
+      try {
+        const saved = localStorage.getItem("settingsData_offline");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === "object") {
+            setSettingsData(parsed);
+          }
+        }
+      } catch (err) {}
     } finally {
       setLoadingSettings(false);
     }
@@ -1069,9 +1216,9 @@ export default function App() {
 
     try {
       const res = await fetch(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`, { cache: 'no-store' });
-      const data = await res.json();
+      const data = await parseApiResponse(res, 'getRiwayatBulan');
       if (data.status === 'success') {
-        const formattedData = data.data.map((r: any) => ({
+        const formattedData = (data.data || []).map((r: any) => ({
           ...r,
           tanggal: formatSheetDate(r.tanggal),
           jamDatang: formatSheetTime(r.jamDatang),
@@ -1264,15 +1411,7 @@ export default function App() {
             method: 'POST',
             body: JSON.stringify(payload)
           });
-          const textData = await res.text();
-          console.log(`[kirimAbsen] Raw response dari server:`, textData);
-          
-          let result;
-          try {
-            result = JSON.parse(textData);
-          } catch(e) {
-            throw new Error(`Data tidak valid dari server (Web App perlu redeploy). Raw: ${textData.substring(0,50)}...`);
-          }
+          const result = await parseApiResponse(res, 'submitAbsen');
           
           if (result.status === 'success') {
             console.log(`[kirimAbsen] Berhasil mencatat absen:`, result);
@@ -2647,15 +2786,35 @@ export default function App() {
                     <p className="text-xs text-neutral-500">Konfigurasi preferensi global dan koordinat batas wilayah (geofence) absensi.</p>
                   </div>
                   
-                  {loadingSettings ? (
-                    <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat pengaturan...</div>
-                  ) : errorSettings ? (
-                    <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
-                      <span className="text-sm font-medium">{errorSettings}</span>
-                      <button onClick={fetchSettings} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
-                        Coba Lagi
-                      </button>
+                  {errorSettings && (
+                    <div className="p-3.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+                      <div className="flex items-center gap-2.5">
+                        <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                        <div>
+                          <p className="text-xs font-bold">Koneksi Server Google Apps Script Terkendala</p>
+                          <p className="text-[11px] text-amber-700 leading-tight">{errorSettings}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                        <button 
+                          onClick={() => setShowGasUrlModal(true)} 
+                          className="flex-1 sm:flex-none px-3 py-1.5 bg-[#cc0000] hover:bg-red-700 text-white text-xs font-bold rounded-lg transition shadow-sm flex items-center justify-center gap-1.5"
+                        >
+                          <Globe className="w-3.5 h-3.5" />
+                          Atur URL Web App
+                        </button>
+                        <button 
+                          onClick={fetchSettings} 
+                          className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold rounded-lg transition"
+                        >
+                          Coba Lagi
+                        </button>
+                      </div>
                     </div>
+                  )}
+
+                  {loadingSettings && !settingsData ? (
+                    <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Memuat pengaturan...</div>
                   ) : settingsData ? (
                     <div className="flex flex-col md:flex-row items-start gap-6 w-full">
                       {/* Left Sidebar: App Info & Main Toggles */}
@@ -2680,6 +2839,31 @@ export default function App() {
                         
                         <div className="w-full h-px bg-neutral-100"></div>
 
+                        {/* GAS Web App Endpoint Status */}
+                        <div className="w-full flex flex-col gap-1.5 py-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
+                              <Globe className="w-3.5 h-3.5 text-[#cc0000]" />
+                              Koneksi Spreadsheet
+                            </span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600">
+                              GAS
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-neutral-400 font-mono truncate" title={GAS_URL}>
+                            {GAS_URL}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setShowGasUrlModal(true)}
+                            className="mt-1 w-full py-1.5 px-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs font-bold rounded-lg transition text-center"
+                          >
+                            Ubah URL Web App
+                          </button>
+                        </div>
+
+                        <div className="w-full h-px bg-neutral-100"></div>
+
                         <div className="w-full flex items-center justify-between gap-2 py-1">
                           <div className="flex-1">
                             <p className="font-bold text-neutral-800 text-sm">Wajibkan GPS</p>
@@ -2700,6 +2884,31 @@ export default function App() {
                             />
                           </button>
                         </div>
+
+                        <div className="w-full h-px bg-neutral-100"></div>
+
+                        <div className="w-full flex items-center justify-between gap-2 py-1">
+                          <div className="flex-1">
+                            <p className="font-bold text-neutral-800 text-sm">Jam Masuk / Pulang</p>
+                            <p className="text-[10px] text-neutral-400 leading-tight">
+                              {settingsData.enableWorkHours !== false ? 'Aturan jam kerja aktif' : 'Bebas jam (nonaktif)'}
+                            </p>
+                          </div>
+                           <button 
+                            onClick={toggleWorkHours}
+                            disabled={savingSettings}
+                            type="button"
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                              settingsData.enableWorkHours !== false ? 'bg-[#cc0000]' : 'bg-neutral-300'
+                            }`}
+                          >
+                            <span 
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                settingsData.enableWorkHours !== false ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Right Panel: Position Manager & Interactive Outlet Map */}
@@ -2713,12 +2922,50 @@ export default function App() {
                               </div>
                               <div>
                                 <h3 className="font-bold text-neutral-800 text-base">Kelola Posisi Pegawai</h3>
-                                <p className="text-xs text-neutral-500">Tambah, edit, atau hapus daftar posisi yang dapat dipilih pegawai saat absen.</p>
+                                <p className="text-xs text-neutral-500">Tambah, edit, atau hapus daftar posisi serta jadwal jam masuk dan pulang.</p>
                               </div>
                             </div>
                             <span className="self-start sm:self-auto text-xs font-bold px-2.5 py-1 bg-neutral-100 text-neutral-700 rounded-full border border-neutral-200">
                               {availablePositions.length} Posisi
                             </span>
+                          </div>
+
+                          {/* Tombol On/Off Aturan Jam Masuk & Pulang */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 mb-5 rounded-xl bg-neutral-50 border border-neutral-200">
+                            <div className="flex items-center gap-3">
+                              <div className={`p-2 rounded-lg ${settingsData.enableWorkHours !== false ? 'bg-red-50 text-[#cc0000] border border-red-100' : 'bg-neutral-200 text-neutral-600'}`}>
+                                <Clock className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-neutral-800 text-sm">Aturan Jam Masuk & Pulang</span>
+                                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                                    settingsData.enableWorkHours !== false ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-neutral-200 text-neutral-600'
+                                  }`}>
+                                    {settingsData.enableWorkHours !== false ? 'ON' : 'OFF'}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-neutral-500">
+                                  {settingsData.enableWorkHours !== false 
+                                    ? 'Aktif: Jam masuk, toleransi batas telat, dan deteksi pulang cepat diberlakukan.' 
+                                    : 'Nonaktif: Pegawai bebas absen kapan saja tanpa penolakan batas waktu.'}
+                                </p>
+                              </div>
+                            </div>
+                            <button 
+                              type="button"
+                              onClick={toggleWorkHours}
+                              disabled={savingSettings}
+                              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer self-start sm:self-center ${
+                                settingsData.enableWorkHours !== false ? 'bg-[#cc0000]' : 'bg-neutral-300'
+                              }`}
+                            >
+                              <span 
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  settingsData.enableWorkHours !== false ? 'translate-x-6' : 'translate-x-1'
+                                }`}
+                              />
+                            </button>
                           </div>
 
                           {/* Form Tambah Posisi */}
@@ -2775,6 +3022,21 @@ export default function App() {
                                           }} className="p-1 border rounded text-xs" />
                                         </div>
                                       </div>
+                                      <div className="flex items-center justify-between mt-1">
+                                        <label className="flex items-center gap-2 text-xs font-semibold text-neutral-700 cursor-pointer">
+                                          <input 
+                                            type="checkbox"
+                                            checked={pos.enabled !== false}
+                                            onChange={(e) => {
+                                              const updated = [...availablePositions];
+                                              updated[idx].enabled = e.target.checked;
+                                              handleUpdatePositions(updated);
+                                            }}
+                                            className="rounded text-[#cc0000] focus:ring-[#cc0000]"
+                                          />
+                                          <span>Aktifkan aturan jam masuk/pulang untuk posisi ini</span>
+                                        </label>
+                                      </div>
                                       <div className="flex gap-2 justify-end mt-1">
                                         <button
                                           type="button"
@@ -2804,9 +3066,22 @@ export default function App() {
                                           </span>
                                           <span className="font-bold text-neutral-800 text-sm">{pos.name}</span>
                                         </div>
-                                        <div className="flex items-center gap-3 pl-8 text-xs text-neutral-500">
+                                        <div className="flex flex-wrap items-center gap-3 pl-8 text-xs text-neutral-500">
                                           <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Masuk: <strong className="text-neutral-700">{pos.jamMasuk}</strong></span>
                                           <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Pulang: <strong className="text-neutral-700">{pos.jamPulang}</strong></span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTogglePositionHours(idx)}
+                                            disabled={savingSettings}
+                                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition cursor-pointer ${
+                                              pos.enabled !== false 
+                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' 
+                                                : 'bg-neutral-100 text-neutral-500 border-neutral-200 hover:bg-neutral-200'
+                                            }`}
+                                            title="Klik untuk mengubah status aturan jam masuk/pulang posisi ini"
+                                          >
+                                            {pos.enabled !== false ? 'Jam: ON' : 'Jam: OFF'}
+                                          </button>
                                         </div>
                                       </div>
                                       <div className="flex items-center gap-1.5 shrink-0">
@@ -3039,7 +3314,24 @@ export default function App() {
         <p className="text-[10px] text-neutral-400 font-medium leading-relaxed">
           Gunakan tombol di atas agar pengaturan sistem terbaru muncul di HP Anda.
         </p>
+
+        <button
+          type="button"
+          onClick={() => setShowGasUrlModal(true)}
+          className="text-[11px] text-neutral-400 hover:text-neutral-700 font-semibold flex items-center justify-center gap-1.5 py-1 transition"
+        >
+          <Globe className="w-3.5 h-3.5 text-[#cc0000]" />
+          Konfigurasi URL Google Apps Script
+        </button>
       </div>
+
+      <GasUrlModal
+        isOpen={showGasUrlModal}
+        onClose={() => setShowGasUrlModal(false)}
+        currentUrl={gasUrl}
+        onSave={handleSaveGasUrl}
+        onReset={handleResetGasUrl}
+      />
     </div>
   );
 }
