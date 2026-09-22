@@ -161,6 +161,17 @@ export const DEFAULT_POSITIONS: PositionConfig[] = [
   { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00" }
 ];
 
+export const cleanTimeString = (val: any, fallback: string = "08:00"): string => {
+  if (!val) return fallback;
+  const match = String(val).match(/(\d{1,2}):(\d{2})/);
+  if (match) {
+    const hh = match[1].padStart(2, '0');
+    const mm = match[2];
+    return `${hh}:${mm}`;
+  }
+  return fallback;
+};
+
 
 const updateFavicon = (url: string) => {
   if (!url) return;
@@ -320,7 +331,11 @@ export default function App() {
         if (typeof p === 'string') {
           return { name: p, jamMasuk: "08:00", jamPulang: "20:00" };
         }
-        return p;
+        return {
+          name: p.name || "",
+          jamMasuk: cleanTimeString(p.jamMasuk, "08:00"),
+          jamPulang: cleanTimeString(p.jamPulang, "20:00")
+        };
       })
     : DEFAULT_POSITIONS;
 
@@ -1009,6 +1024,12 @@ export default function App() {
         d.requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
         if (!d.positions || !Array.isArray(d.positions) || d.positions.length === 0) {
           d.positions = DEFAULT_POSITIONS;
+        } else {
+          d.positions = d.positions.map((p: any) => ({
+            name: typeof p === 'string' ? p : p.name,
+            jamMasuk: cleanTimeString(p.jamMasuk, "08:00"),
+            jamPulang: cleanTimeString(p.jamPulang, "20:00")
+          }));
         }
         setSettingsData(d);
         try {

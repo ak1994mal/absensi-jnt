@@ -94,9 +94,12 @@ function getJamMasukPosisi(posisi) {
   const sheet = ss.getSheetByName("DataPosisi");
   if (!sheet) return "08:00";
   const values = sheet.getDataRange().getValues();
+  const target = (posisi || "").toString().trim().toLowerCase();
   for (let i = 1; i < values.length; i++) {
-    if (values[i][0] && values[i][0].toString().trim() === posisi) {
-      return values[i][1] ? values[i][1].toString().trim() : "08:00";
+    const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+    if (rowPos === target) {
+      const parsed = parseSheetTime(values[i][1]);
+      return (parsed && parsed !== "-") ? parsed : "08:00";
     }
   }
   return "08:00";
@@ -104,15 +107,24 @@ function getJamMasukPosisi(posisi) {
 
 // "08:30" -> 510
 function timeStrToMinutes(str) {
-  const parts = (str || "08:00").split(":");
-  return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+  if (str === null || str === undefined || str === "") return 480;
+  const timeFormatted = parseSheetTime(str);
+  if (!timeFormatted || timeFormatted === "-") return 480;
+  const match = String(timeFormatted).match(/(\d{1,2}):(\d{2})/);
+  if (match) {
+    const h = parseInt(match[1], 10) || 0;
+    const m = parseInt(match[2], 10) || 0;
+    return (h * 60) + m;
+  }
+  return 480;
 }
 
 // 510 -> "08:30"
 function minutesToTimeStr(mins) {
-  const h = Math.floor(mins / 60) % 24;
-  const m = mins % 60;
-  return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
+  const m = Math.max(0, Math.floor(mins || 0));
+  const h = Math.floor(m / 60) % 24;
+  const min = m % 60;
+  return ("0" + h).slice(-2) + ":" + ("0" + min).slice(-2);
 }
 
 // Baca jam pulang untuk posisi tertentu dari sheet DataPosisi. Default "20:00" kalau tidak ditemukan.
@@ -121,9 +133,12 @@ function getJamPulangPosisi(posisi) {
   const sheet = ss.getSheetByName("DataPosisi");
   if (!sheet) return "20:00";
   const values = sheet.getDataRange().getValues();
+  const target = (posisi || "").toString().trim().toLowerCase();
   for (let i = 1; i < values.length; i++) {
-    if (values[i][0] && values[i][0].toString().trim() === posisi) {
-      return values[i][2] ? values[i][2].toString().trim() : "20:00";
+    const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+    if (rowPos === target) {
+      const parsed = parseSheetTime(values[i][2]);
+      return (parsed && parsed !== "-") ? parsed : "20:00";
     }
   }
   return "20:00";
@@ -360,12 +375,12 @@ function getSettings() {
     const pValues = sheetPosisi.getDataRange().getValues();
     for (let i = 1; i < pValues.length; i++) {
       if (pValues[i][0]) {
-        let jamMasuk = pValues[i][1] ? pValues[i][1].toString().trim() : "08:00";
-        let jamPulang = pValues[i][2] ? pValues[i][2].toString().trim() : "20:00";
+        let jamMasuk = parseSheetTime(pValues[i][1]);
+        let jamPulang = parseSheetTime(pValues[i][2]);
         positions.push({
           name: pValues[i][0].toString().trim(),
-          jamMasuk: jamMasuk,
-          jamPulang: jamPulang
+          jamMasuk: (jamMasuk && jamMasuk !== "-") ? jamMasuk : "08:00",
+          jamPulang: (jamPulang && jamPulang !== "-") ? jamPulang : "20:00"
         });
       }
     }
@@ -754,11 +769,19 @@ function parseSheetTime(val) {
     let h = Math.floor(totalSeconds / 3600);
     let m = Math.floor((totalSeconds % 3600) / 60);
     return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
-  } else if (typeof val === "string" && val.includes("T") && !isNaN(Date.parse(val))) {
-    const d = new Date(val);
-    const hh = ("0" + d.getHours()).slice(-2);
-    const mm = ("0" + d.getMinutes()).slice(-2);
-    return hh + ":" + mm;
+  } else if (typeof val === "string") {
+    if (val.includes("T") && !isNaN(Date.parse(val))) {
+      const d = new Date(val);
+      const hh = ("0" + d.getHours()).slice(-2);
+      const mm = ("0" + d.getMinutes()).slice(-2);
+      return hh + ":" + mm;
+    }
+    const match = val.match(/(\d{1,2}):(\d{2})/);
+    if (match) {
+      const hh = ("0" + match[1]).slice(-2);
+      const mm = match[2];
+      return hh + ":" + mm;
+    }
   }
   
   return String(val);
