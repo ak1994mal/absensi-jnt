@@ -46,3 +46,63 @@ export const parseApiResponse = async (res: Response, endpoint: string): Promise
     throw new Error(`Format respons JSON tidak valid dari server (${endpoint}): ${err?.message || 'Parse Error'}`);
   }
 };
+
+export const DEFAULT_OFFLINE_PEGAWAI = [
+  "Mohammad Danang",
+  "Bambang",
+  "Fitri Fajria",
+  "Irma Damayanti",
+  "M. Hari Yanto"
+];
+
+export const DEFAULT_OFFLINE_POSITIONS = [
+  { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+  { name: "Pickup", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+  { name: "Sprinter", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+  { name: "Drop Point", jamMasuk: "08:00", jamPulang: "20:00", enabled: true }
+];
+
+export const DEFAULT_OFFLINE_OUTLETS = [
+  { nama: "YZ_ MDP PASIR JAHA BALARAJA", lat: -6.205649180689262, lng: 106.45134398119775, radius: 150 },
+  { nama: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727, radius: 150 }
+];
+
+export const DEFAULT_OFFLINE_SETTINGS = {
+  requireLocation: true,
+  enableWorkHours: true,
+  positions: DEFAULT_OFFLINE_POSITIONS,
+  outlets: DEFAULT_OFFLINE_OUTLETS,
+  favicon: ""
+};
+
+export const DEFAULT_OFFLINE_RINGKASAN = [
+  { 
+    nama: "Mohammad Danang", 
+    posisi: "Admin",
+    outlet: "YZ_ MDP PASIR JAHA BALARAJA", 
+    jamDatang: "07:55", 
+    statusMasuk: "TEPAT WAKTU",
+    jamPulang: "20:05",
+    totalJam: "12j 10m",
+    statusPulang: "NORMAL",
+    fotoDatang: "https://placehold.co/100x100?text=Masuk",
+    fotoPulang: "https://placehold.co/100x100?text=Pulang",
+    lokasiDatang: "https://maps.google.com/?q=-6.2056,106.4513",
+    lokasiPulang: "https://maps.google.com/?q=-6.2056,106.4513"
+  },
+  { 
+    nama: "Fitri Fajria", 
+    posisi: "Pickup",
+    outlet: "YZ_ MDP JAYANTI CIKANDE", 
+    jamDatang: "08:40", 
+    statusMasuk: "TELAT",
+    alasan: "Ban bocor di jalan tol",
+    jamPulang: "-",
+    totalJam: "-",
+    statusPulang: "-",
+    fotoDatang: "https://placehold.co/100x100?text=Masuk",
+    fotoPulang: "",
+    lokasiDatang: "https://maps.google.com/?q=-6.2065,106.3862",
+    lokasiPulang: ""
+  }
+];

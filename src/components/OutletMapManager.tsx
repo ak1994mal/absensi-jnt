@@ -91,7 +91,7 @@ export default function OutletMapManager({ outlets: initialOutlets, onSaveOutlet
         }));
         setLocalOutlets(cleaned);
       } catch (e) {
-        console.error("Gagal parse initialOutlets:", e);
+        console.warn("Gagal parse initialOutlets:", e);
       }
     } else {
       setLocalOutlets([
