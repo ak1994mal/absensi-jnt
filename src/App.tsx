@@ -126,18 +126,58 @@ export const formatSheetDate = (val: any): string => {
 
 
 export const formatSheetTime = (val: any): string => {
-  if (!val) return "-";
-  const str = String(val).trim();
-  if (str === "-") return "-";
-  
-  if (str.includes("T") && !isNaN(Date.parse(str))) {
-    const d = new Date(str);
-    const h = d.getHours().toString().padStart(2, '0');
-    const m = d.getMinutes().toString().padStart(2, '0');
+  if (val === null || val === undefined || val === "" || val === "-") return "-";
+
+  // 1. Date object (instanceof or object with getHours)
+  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]' || (typeof val === 'object' && typeof val?.getHours === 'function')) {
+    try {
+      const h = String(val.getHours()).padStart(2, '0');
+      const m = String(val.getMinutes()).padStart(2, '0');
+      return `${h}:${m}`;
+    } catch (e) {}
+  }
+
+  // 2. Number: either epoch timestamp or fractional day (Google Sheets time serial)
+  if (typeof val === "number" && !isNaN(val)) {
+    if (val > 100000000) {
+      try {
+        const d = new Date(val);
+        const h = String(d.getHours()).padStart(2, '0');
+        const m = String(d.getMinutes()).padStart(2, '0');
+        return `${h}:${m}`;
+      } catch (e) {}
+    }
+    let frac = val % 1;
+    if (frac < 0) frac += 1;
+    const totalSecs = Math.round(frac * 86400);
+    const h = String(Math.floor(totalSecs / 3600) % 24).padStart(2, '0');
+    const m = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
     return `${h}:${m}`;
   }
-  
-  return str;
+
+  // 3. String representation
+  const str = String(val).trim();
+  if (!str || str === "-" || str === "[object Object]") return "-";
+
+  // ISO string or parsable Date string
+  if (str.includes("T") && !isNaN(Date.parse(str))) {
+    try {
+      const d = new Date(str);
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      return `${h}:${m}`;
+    } catch (e) {}
+  }
+
+  // Look for time pattern: H:MM or HH:MM or HH.MM
+  const match = str.match(/(?:^|\s|T)?(\d{1,2})[:.](\d{2})(?::\d{2})?(?:\s|$)?/);
+  if (match) {
+    const h = match[1].padStart(2, '0');
+    const m = match[2].padStart(2, '0');
+    return `${h}:${m}`;
+  }
+
+  return "-";
 };
 
 
@@ -1433,30 +1473,30 @@ export default function App() {
         setSubmitStatus("Mengirim data absensi ke sistem...");
         toast.info("⏳ Mengirim data absen, mohon tunggu...");
 
-        // Dapatkan jam datang jika status PULANG untuk mencegah TypeError: jamDatang.split is not a function di backend
+        // Dapatkan jam datang jika status PULANG untuk mencegah error di backend
         let jamDatangTerdata = "";
+        const targetOutlet = (keterangan === "PULANG" && absenHariIni?.outlet) ? absenHariIni.outlet : (outlet || "-");
+        const targetPosisi = (keterangan === "PULANG" && absenHariIni?.posisi) ? (absenHariIni.posisi as PosisiPegawai) : (posisi || "");
+
         if (keterangan === "PULANG") {
-          if (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") {
-            jamDatangTerdata = String(absenHariIni.jamDatang).trim();
-          } else {
-            const rowHariIni = riwayat.find(r => 
-              r.tanggal && normalizeDateStr(r.tanggal) === normalizedToday && 
-              r.jamDatang && r.jamDatang !== "-"
-            );
-            if (rowHariIni?.jamDatang) {
-              jamDatangTerdata = String(rowHariIni.jamDatang).trim();
-            }
-          }
+          const raw = (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-")
+            ? absenHariIni.jamDatang
+            : (riwayat.find(r => 
+                r.tanggal && normalizeDateStr(r.tanggal) === normalizedToday && 
+                r.jamDatang && r.jamDatang !== "-"
+              )?.jamDatang || "");
+          const formatted = formatSheetTime(raw);
+          jamDatangTerdata = (formatted && formatted !== "-") ? formatted : "";
         }
         
         const payload = {
           action: "processForm",
           data: {
             nama: nama,
-            posisi: posisi,
+            posisi: targetPosisi,
             status: keterangan,
             jenisIzin: keterangan === "IZIN" ? jenisIzin : "",
-            outlet: keterangan === "IZIN" ? "TIDAK MASUK" : outlet,
+            outlet: keterangan === "IZIN" ? "TIDAK MASUK" : targetOutlet,
             alasan: keterangan === "IZIN" ? alasan : (isLate ? keteranganTelat : (isEarlyLeave ? keteranganPulangCepat : "")),
             lat: userLat,
             lng: userLng,

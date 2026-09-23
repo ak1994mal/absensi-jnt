@@ -182,7 +182,11 @@ function getJamPulangPosisi(posisi) {
 // Sisipkan baris baru persis di bawah header (row 2), bukan di paling bawah,
 // supaya data terbaru selalu di atas tanpa perlu scroll.
 function prependDataRow(sheet, rowValues) {
-  sheet.insertRowBefore(2);
+  if (sheet.getMaxRows() < 2) {
+    sheet.insertRowAfter(1);
+  } else {
+    sheet.insertRowBefore(2);
+  }
   sheet.getRange(2, 1, 1, rowValues.length).setValues([rowValues]);
 }
 
@@ -227,7 +231,7 @@ function processForm(data) {
     
     // Sheet AbsenIzin: Kolom (A - G): Tanggal, Nama Pegawai, Posisi, Jenis (Izin atau Sakit), Alasan, Jam Input, Bukti Foto
     const sheetIzin = ss.getSheetByName("AbsenIzin");
-    sheetIzin.appendRow([
+    prependDataRow(sheetIzin, [
       tanggalStr, 
       data.nama, 
       data.posisi,
@@ -275,6 +279,17 @@ function processForm(data) {
     if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
       userRowIndex = i + 1;
       break;
+    }
+  }
+
+  // Fallback pencarian untuk PULANG jika outlet tidak persis sama (misal ada perbedaan spasi)
+  if (userRowIndex === -1 && data.status === "PULANG") {
+    for (let i = 1; i < dataRange.length; i++) {
+      const rowTanggal = parseSheetDate(dataRange[i][0]);
+      if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") {
+        userRowIndex = i + 1;
+        break;
+      }
     }
   }
   
@@ -336,51 +351,57 @@ function processForm(data) {
       return { status: "error", message: "Anda belum absen DATANG hari ini." };
     }
     // Jam Pulang ada di kolom F (index 5)
-    if (dataRange[userRowIndex - 1][5] !== "-") { 
+    if (dataRange[userRowIndex - 1][5] && dataRange[userRowIndex - 1][5] !== "-") { 
       return { status: "error", message: "Anda sudah absen PULANG hari ini." };
     }
     
-    // Jam Datang Kolom E (index 4) atau dari payload frontend
-    let rawJamDatang = (data && data.jamDatang) ? data.jamDatang : dataRange[userRowIndex - 1][4];
-    let jamDatang = parseSheetTime(rawJamDatang);
-    let jamDatangStr = (typeof jamDatang === "string") ? jamDatang : String(jamDatang || "-");
+    // Normalisasi jam datang: coba dari spreadsheet kolom E (index 4) dulu, lalu fallback ke payload frontend
+    var rawFromSheet = dataRange[userRowIndex - 1][4];
+    var rawFromPayload = (data && data.jamDatang) ? data.jamDatang : null;
     
-    let totalJamStr = "-";
-    let statusPulang = "NORMAL";
+    var jamDatang = parseSheetTime(rawFromSheet);
+    if (!jamDatang || jamDatang === "-") {
+      jamDatang = parseSheetTime(rawFromPayload);
+    }
     
-    if (jamDatangStr && jamDatangStr !== "-" && jamDatangStr.indexOf(":") !== -1) {
-      const pDatang = jamDatangStr.split(":");
-      const jamH = parseInt(pDatang[0], 10) || 0;
-      const jamM = parseInt(pDatang[1], 10) || 0;
-      const hoursDiff = dateObj.getHours() - jamH;
-      const minsDiff = dateObj.getMinutes() - jamM;
-      
-      let totalMins = (hoursDiff * 60) + minsDiff;
-      if (totalMins < 0) totalMins = 0;
-      
-      const rH = Math.floor(totalMins / 60);
-      const rM = totalMins % 60;
-      totalJamStr = rH + "j " + rM + "m";
-      
-      if (rH >= 13) {
-        statusPulang = "LEMBUR";
+    var totalJamStr = "-";
+    var statusPulang = "NORMAL";
+    
+    if (jamDatang && jamDatang !== "-") {
+      var matchDatang = String(jamDatang).match(/^(\d{1,2}):(\d{2})$/);
+      if (matchDatang) {
+        var jamH = parseInt(matchDatang[1], 10) || 0;
+        var jamM = parseInt(matchDatang[2], 10) || 0;
+        var hoursDiff = dateObj.getHours() - jamH;
+        var minsDiff = dateObj.getMinutes() - jamM;
+        
+        var totalMins = (hoursDiff * 60) + minsDiff;
+        if (totalMins < 0) totalMins = 0;
+        
+        var rH = Math.floor(totalMins / 60);
+        var rM = totalMins % 60;
+        totalJamStr = rH + "j " + rM + "m";
+        
+        if (rH >= 13) {
+          statusPulang = "LEMBUR";
+        }
       }
     }
 
     // Deteksi pulang cepat: bandingkan jam pulang aktual vs jadwal jam pulang posisi (DataPosisi).
     // Hanya jika aturan jam kerja aktif dan tidak sedang lembur.
     if (statusPulang !== "LEMBUR" && isPosisiHoursEnabled(data.posisi, ss)) {
-      const jamPulangPosisi = getJamPulangPosisi(data.posisi);
-      const jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
-      const jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
+      var jamPulangPosisi = getJamPulangPosisi(data.posisi);
+      var jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
+      var jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
       if (jamSekarangMenit < jamPulangJadwalMenit) {
         statusPulang = "PULANG CEPAT";
       }
     }
-    const keteranganPulang = (statusPulang === "PULANG CEPAT") ? (data.alasan || "-") : "-";
+    var keteranganPulang = (statusPulang === "PULANG CEPAT") ? (data.alasan || "-") : "-";
 
-    const filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
-    const imageUrl = uploadImageToDrive(data.image, filename);
+    var filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
+    var imageUrl = uploadImageToDrive(data.image, filename);
     
     // Update data di baris user (Urutan getRange adalah 1-based indexing)
     sheetData.getRange(userRowIndex, 6).setValue(jam);           // F (Jam Pulang)
@@ -809,46 +830,65 @@ function getRiwayatBulan(nama, bulan) {
     }
   }
   
-  riwayat.reverse(); 
+  // Data di sheet sudah terurut dari row 2 (terbaru) ke bawah, sehingga tidak perlu di-reverse
   return { status: "success", data: riwayat };
 }
 
 /**
- * Robust date formatting helper function to handle both Date objects and various string date formats.
- * Ensures dates are consistently returned in DD/MM/YYYY format.
+ * Robust time formatting helper function to handle Date objects, fractional days, and various string formats.
+ * Ensures times are consistently returned in HH:MM format or "-" if invalid/absent.
  */
 function parseSheetTime(val) {
-  if (val === null || val === undefined || val === "") return "-";
-  if (val === "-") return "-";
+  if (val === null || val === undefined || val === "" || val === "-") return "-";
   
-  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]') {
-    const hh = ("0" + val.getHours()).slice(-2);
-    const mm = ("0" + val.getMinutes()).slice(-2);
-    return hh + ":" + mm;
-  } else if (typeof val === "number") {
-    // Check if it's a fractional day (gas time format)
-    let totalSeconds = Math.round(val * 24 * 60 * 60);
+  // 1. Date object
+  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]' || (typeof val === 'object' && typeof val.getHours === 'function')) {
+    try {
+      const hh = ("0" + val.getHours()).slice(-2);
+      const mm = ("0" + val.getMinutes()).slice(-2);
+      return hh + ":" + mm;
+    } catch (e) {}
+  }
+  
+  // 2. Number: Google Sheets fractional day or epoch timestamp
+  if (typeof val === "number" && !isNaN(val)) {
+    if (val > 100000000) {
+      try {
+        const d = new Date(val);
+        const hh = ("0" + d.getHours()).slice(-2);
+        const mm = ("0" + d.getMinutes()).slice(-2);
+        return hh + ":" + mm;
+      } catch (e) {}
+    }
+    let frac = val % 1;
+    if (frac < 0) frac += 1;
+    let totalSeconds = Math.round(frac * 86400);
     let h = Math.floor(totalSeconds / 3600) % 24;
     let m = Math.floor((totalSeconds % 3600) / 60);
     return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
-  } else if (typeof val === "string") {
-    const s = val.trim();
-    if (s.includes("T") && !isNaN(Date.parse(s))) {
+  }
+  
+  // 3. String
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "[object Object]") return "-";
+  
+  if (s.includes("T") && !isNaN(Date.parse(s))) {
+    try {
       const d = new Date(s);
       const hh = ("0" + d.getHours()).slice(-2);
       const mm = ("0" + d.getMinutes()).slice(-2);
       return hh + ":" + mm;
-    }
-    const match = s.match(/(\d{1,2}):(\d{2})/);
-    if (match) {
-      const hh = ("0" + match[1]).slice(-2);
-      const mm = match[2];
-      return hh + ":" + mm;
-    }
-    return s;
+    } catch (e) {}
   }
   
-  return String(val || "-");
+  const match = s.match(/(?:^|\s|T)?(\d{1,2})[:.](\d{2})(?::\d{2})?(?:\s|$)?/);
+  if (match) {
+    const hh = ("0" + match[1]).slice(-2);
+    const mm = ("0" + match[2]).slice(-2);
+    return hh + ":" + mm;
+  }
+  
+  return "-";
 }
 
 function parseSheetDate(val) {

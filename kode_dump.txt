@@ -78,6 +78,118 @@ function getSpreadsheet() {
   return SpreadsheetApp.openById(SPREADSHEET_ID);
 }
 
+// Baca toleransi telat (menit) dari sheet Settings!B7. Default 30 kalau kosong/tidak valid.
+function getToleransiTelat() {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("Settings");
+  if (!sheet) return 30;
+  const val = sheet.getRange("B7").getValue();
+  const num = parseInt(val, 10);
+  return isNaN(num) ? 30 : num;
+}
+
+// Baca status aktif aturan jam masuk/pulang dari sheet Settings!B8. Default true.
+function getEnableWorkHours(ss) {
+  try {
+    const sheet = (ss || getSpreadsheet()).getSheetByName("Settings");
+    if (!sheet) return true;
+    const val = sheet.getRange("B8").getValue();
+    if (val === "" || val === null || val === undefined) return true;
+    return val === true || val === "TRUE" || val === "true";
+  } catch (e) {
+    return true;
+  }
+}
+
+// Cek apakah jam kerja (masuk/pulang) aktif untuk posisi tertentu
+function isPosisiHoursEnabled(posisi, ss) {
+  try {
+    if (!getEnableWorkHours(ss)) return false;
+    const sheet = (ss || getSpreadsheet()).getSheetByName("DataPosisi");
+    if (!sheet) return true;
+    const values = sheet.getDataRange().getValues();
+    const target = (posisi || "").toString().trim().toLowerCase();
+    for (let i = 1; i < values.length; i++) {
+      const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+      if (rowPos === target) {
+        const statusVal = values[i][3];
+        if (statusVal === "" || statusVal === null || statusVal === undefined) return true;
+        return statusVal === true || statusVal === "TRUE" || statusVal === "true" || statusVal === "ON" || statusVal === "on";
+      }
+    }
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+// Baca jam masuk untuk posisi tertentu dari sheet DataPosisi. Default "08:00" kalau tidak ditemukan.
+function getJamMasukPosisi(posisi) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("DataPosisi");
+  if (!sheet) return "08:00";
+  const values = sheet.getDataRange().getValues();
+  const target = (posisi || "").toString().trim().toLowerCase();
+  for (let i = 1; i < values.length; i++) {
+    const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+    if (rowPos === target) {
+      const parsed = parseSheetTime(values[i][1]);
+      return (parsed && parsed !== "-") ? parsed : "08:00";
+    }
+  }
+  return "08:00";
+}
+
+// "08:30" -> 510
+function timeStrToMinutes(str) {
+  if (str === null || str === undefined || str === "") return 480;
+  const timeFormatted = parseSheetTime(str);
+  if (!timeFormatted || timeFormatted === "-") return 480;
+  const match = String(timeFormatted).match(/(\d{1,2}):(\d{2})/);
+  if (match) {
+    const h = parseInt(match[1], 10) || 0;
+    const m = parseInt(match[2], 10) || 0;
+    return (h * 60) + m;
+  }
+  return 480;
+}
+
+// 510 -> "08:30"
+function minutesToTimeStr(mins) {
+  const m = Math.max(0, Math.floor(mins || 0));
+  const h = Math.floor(m / 60) % 24;
+  const min = m % 60;
+  return ("0" + h).slice(-2) + ":" + ("0" + min).slice(-2);
+}
+
+// Baca jam pulang untuk posisi tertentu dari sheet DataPosisi. Default "20:00" kalau tidak ditemukan.
+function getJamPulangPosisi(posisi) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("DataPosisi");
+  if (!sheet) return "20:00";
+  const values = sheet.getDataRange().getValues();
+  const target = (posisi || "").toString().trim().toLowerCase();
+  for (let i = 1; i < values.length; i++) {
+    const rowPos = (values[i][0] || "").toString().trim().toLowerCase();
+    if (rowPos === target) {
+      const parsed = parseSheetTime(values[i][2]);
+      return (parsed && parsed !== "-") ? parsed : "20:00";
+    }
+  }
+  return "20:00";
+}
+
+// Sisipkan baris baru persis di bawah header (row 2), bukan di paling bawah,
+// supaya data terbaru selalu di atas tanpa perlu scroll.
+function prependDataRow(sheet, rowValues) {
+  if (sheet.getMaxRows() < 2) {
+    sheet.insertRowAfter(1);
+  } else {
+    sheet.insertRowBefore(2);
+  }
+  sheet.getRange(2, 1, 1, rowValues.length).setValues([rowValues]);
+}
+
 function uploadImageToDrive(base64Data, filename) {
   if (!base64Data) return "";
   try {
@@ -119,7 +231,7 @@ function processForm(data) {
     
     // Sheet AbsenIzin: Kolom (A - G): Tanggal, Nama Pegawai, Posisi, Jenis (Izin atau Sakit), Alasan, Jam Input, Bukti Foto
     const sheetIzin = ss.getSheetByName("AbsenIzin");
-    sheetIzin.appendRow([
+    prependDataRow(sheetIzin, [
       tanggalStr, 
       data.nama, 
       data.posisi,
@@ -129,9 +241,9 @@ function processForm(data) {
       imageUrl
     ]);
     
-    // Data_Absensi: Kolom (A - M): Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang
+    // Data_Absensi: Kolom (A - O): Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang, Keterangan Datang, Keterangan Pulang
     const sheetData = ss.getSheetByName("Data_Absensi");
-    sheetData.appendRow([
+    prependDataRow(sheetData, [
       tanggalStr,    // A. Tanggal
       data.nama,     // B. Nama
       data.posisi,   // C. Posisi
@@ -144,7 +256,9 @@ function processForm(data) {
       "-",           // J. Lokasi Datang
       "-",           // K. Lokasi Pulang
       imageUrl,      // L. Foto Datang (Bukti Izin)
-      "-"            // M. Foto Pulang
+      "-",           // M. Foto Pulang
+      data.alasan || "-", // N. Keterangan Datang
+      "-"            // O. Keterangan Pulang
     ]);
 
     return { status: "success", message: `Data ${jenisKeterangan} berhasil dicatat.` };
@@ -154,13 +268,28 @@ function processForm(data) {
   const dataRange = sheetData.getDataRange().getValues();
   let userRowIndex = -1;
   
-  // Cari absen hari ini munddur dari bawah
-  // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom H (7) = Status Masuk
-  for (let i = dataRange.length - 1; i > 0; i--) { 
+  // Cari absen hari ini untuk NAMA + OUTLET ini secara spesifik.
+  // Baris terbaru ada di paling atas (row 2), jadi loop dari atas ke bawah.
+  // Kunci pencarian disertakan "outlet" supaya pegawai bisa absen DATANG lagi
+  // di outlet lain di hari yang sama (mis. jadi backup shift di outlet berbeda)
+  // tanpa dianggap "sudah absen" oleh outlet asalnya.
+  // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom D (3) = Outlet, Kolom H (7) = Status Masuk
+  for (let i = 1; i < dataRange.length; i++) { 
     const rowTanggal = parseSheetDate(dataRange[i][0]);
-    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") { 
+    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
       userRowIndex = i + 1;
       break;
+    }
+  }
+
+  // Fallback pencarian untuk PULANG jika outlet tidak persis sama (misal ada perbedaan spasi)
+  if (userRowIndex === -1 && data.status === "PULANG") {
+    for (let i = 1; i < dataRange.length; i++) {
+      const rowTanggal = parseSheetDate(dataRange[i][0]);
+      if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") {
+        userRowIndex = i + 1;
+        break;
+      }
     }
   }
   
@@ -169,21 +298,35 @@ function processForm(data) {
     if (userRowIndex !== -1 && dataRange[userRowIndex - 1][4] !== "-") { 
       return { status: "error", message: "Anda sudah melakukan absen DATANG hari ini." };
     }
-    
+
+    // Cek apakah jam kerja aktif (berdasarkan master toggle Settings!B8 dan status posisi DataPosisi)
+    const isHoursActive = isPosisiHoursEnabled(data.posisi, ss);
+
     let statusMasuk = "TEPAT WAKTU";
-    const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
-    
-    if (data.posisi === "Admin" && minutes > 510) { // Lewat jam 08:30 (8*60+30)
-      statusMasuk = "TELAT";
-    } else if (data.posisi === "Pickup" && minutes >= 780) { // Lewat jam 13:00 (13*60)
-      statusMasuk = "TELAT";
+    if (isHoursActive) {
+      // Cek telat & batas absen berdasarkan jam masuk posisi (DataPosisi) + toleransi (Settings!B7)
+      const jamMasukPosisi = getJamMasukPosisi(data.posisi);
+      const toleransiMenit = getToleransiTelat();
+      const jamMasukMenit = timeStrToMinutes(jamMasukPosisi);
+      const batasTelatMenit = jamMasukMenit + toleransiMenit;
+      const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
+
+      if (minutes > batasTelatMenit) {
+        const batasStr = minutesToTimeStr(batasTelatMenit);
+        return {
+          status: "error",
+          message: `Absen DATANG ditolak. Batas absen untuk posisi ${data.posisi} adalah ${jamMasukPosisi} + toleransi ${toleransiMenit} menit (maksimal ${batasStr}). Silakan ajukan IZIN/SAKIT jika terlambat lebih dari batas ini.`
+        };
+      }
+
+      statusMasuk = minutes > jamMasukMenit ? "TELAT" : "TEPAT WAKTU";
     }
 
     const filename = "Masuk-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
     const imageUrl = uploadImageToDrive(data.image, filename);
     
-    // (A-M) Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang
-    sheetData.appendRow([
+    // (A-O) Tanggal, Nama Pegawai, Posisi, Outlet, Jam Datang, Jam Pulang, Total Jam, Status Masuk, Status Pulang, Lokasi Datang, Lokasi Pulang, Foto Datang, Foto Pulang, Keterangan Datang, Keterangan Pulang
+    prependDataRow(sheetData, [
       tanggalStr,   // A
       data.nama,    // B
       data.posisi,  // C
@@ -196,7 +339,9 @@ function processForm(data) {
       lokasiUrl,    // J (Lokasi Datang)
       "-",          // K (Lokasi Pulang)
       imageUrl,     // L
-      "-"           // M
+      "-",          // M
+      data.alasan || "-", // N (Keterangan Datang, mis. alasan telat)
+      "-"           // O (Keterangan Pulang, diisi saat PULANG)
     ]);
     
     return { status: "success", message: "Absen DATANG berhasil dicatat." };
@@ -206,39 +351,57 @@ function processForm(data) {
       return { status: "error", message: "Anda belum absen DATANG hari ini." };
     }
     // Jam Pulang ada di kolom F (index 5)
-    if (dataRange[userRowIndex - 1][5] !== "-") { 
+    if (dataRange[userRowIndex - 1][5] && dataRange[userRowIndex - 1][5] !== "-") { 
       return { status: "error", message: "Anda sudah absen PULANG hari ini." };
     }
     
-    // Jam Datang Kolom E (index 4) atau dari data payload frontend
-    let rawJamDatang = (data && data.jamDatang) ? data.jamDatang : dataRange[userRowIndex - 1][4];
-    let jamDatang = parseSheetTime(rawJamDatang);
-    let jamDatangStr = (typeof jamDatang === "string") ? jamDatang : String(jamDatang || "-");
+    // Normalisasi jam datang: coba dari spreadsheet kolom E (index 4) dulu, lalu fallback ke payload frontend
+    var rawFromSheet = dataRange[userRowIndex - 1][4];
+    var rawFromPayload = (data && data.jamDatang) ? data.jamDatang : null;
     
-    let totalJamStr = "-";
-    let statusPulang = "NORMAL";
+    var jamDatang = parseSheetTime(rawFromSheet);
+    if (!jamDatang || jamDatang === "-") {
+      jamDatang = parseSheetTime(rawFromPayload);
+    }
     
-    if (jamDatangStr && jamDatangStr !== "-" && jamDatangStr.indexOf(":") !== -1) {
-      const pDatang = jamDatangStr.split(":");
-      const jamH = parseInt(pDatang[0], 10) || 0;
-      const jamM = parseInt(pDatang[1], 10) || 0;
-      const hoursDiff = dateObj.getHours() - jamH;
-      const minsDiff = dateObj.getMinutes() - jamM;
-      
-      let totalMins = (hoursDiff * 60) + minsDiff;
-      if (totalMins < 0) totalMins = 0;
-      
-      const rH = Math.floor(totalMins / 60);
-      const rM = totalMins % 60;
-      totalJamStr = rH + "j " + rM + "m";
-      
-      if (rH >= 13) {
-        statusPulang = "LEMBUR";
+    var totalJamStr = "-";
+    var statusPulang = "NORMAL";
+    
+    if (jamDatang && jamDatang !== "-") {
+      var matchDatang = String(jamDatang).match(/^(\d{1,2}):(\d{2})$/);
+      if (matchDatang) {
+        var jamH = parseInt(matchDatang[1], 10) || 0;
+        var jamM = parseInt(matchDatang[2], 10) || 0;
+        var hoursDiff = dateObj.getHours() - jamH;
+        var minsDiff = dateObj.getMinutes() - jamM;
+        
+        var totalMins = (hoursDiff * 60) + minsDiff;
+        if (totalMins < 0) totalMins = 0;
+        
+        var rH = Math.floor(totalMins / 60);
+        var rM = totalMins % 60;
+        totalJamStr = rH + "j " + rM + "m";
+        
+        if (rH >= 13) {
+          statusPulang = "LEMBUR";
+        }
       }
     }
 
-    const filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
-    const imageUrl = uploadImageToDrive(data.image, filename);
+    // Deteksi pulang cepat: bandingkan jam pulang aktual vs jadwal jam pulang posisi (DataPosisi).
+    // Hanya jika aturan jam kerja aktif dan tidak sedang lembur.
+    if (statusPulang !== "LEMBUR" && isPosisiHoursEnabled(data.posisi, ss)) {
+      var jamPulangPosisi = getJamPulangPosisi(data.posisi);
+      var jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
+      var jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
+      if (jamSekarangMenit < jamPulangJadwalMenit) {
+        statusPulang = "PULANG CEPAT";
+      }
+    }
+    var keteranganPulang = (statusPulang === "PULANG CEPAT") ? (data.alasan || "-") : "-";
+
+    var filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
+    var imageUrl = uploadImageToDrive(data.image, filename);
     
     // Update data di baris user (Urutan getRange adalah 1-based indexing)
     sheetData.getRange(userRowIndex, 6).setValue(jam);           // F (Jam Pulang)
@@ -246,6 +409,7 @@ function processForm(data) {
     sheetData.getRange(userRowIndex, 9).setValue(statusPulang);  // I (Status Pulang)
     sheetData.getRange(userRowIndex, 11).setValue(lokasiUrl);    // K (Lokasi Pulang)
     sheetData.getRange(userRowIndex, 13).setValue(imageUrl);     // M (Foto Pulang)
+    sheetData.getRange(userRowIndex, 15).setValue(keteranganPulang); // O (Keterangan Pulang)
     
     return { status: "success", message: "Absen PULANG berhasil dicatat." };
   }
@@ -270,6 +434,13 @@ function getSettings() {
     requireLocation = requireLocationVal === true || requireLocationVal === "TRUE" || requireLocationVal === "true";
   }
 
+  // Mengambil enableWorkHours dari B8 (Row 8, Column 2)
+  let enableWorkHours = true; // default true
+  const enableWorkHoursVal = sheet.getRange("B8").getValue();
+  if (enableWorkHoursVal !== "") {
+    enableWorkHours = enableWorkHoursVal === true || enableWorkHoursVal === "TRUE" || enableWorkHoursVal === "true";
+  }
+
   // Mengambil data posisi
   let positions = [];
   let sheetPosisi = ss.getSheetByName("DataPosisi");
@@ -277,40 +448,29 @@ function getSettings() {
     const pValues = sheetPosisi.getDataRange().getValues();
     for (let i = 1; i < pValues.length; i++) {
       if (pValues[i][0]) {
-        let jamMasuk = pValues[i][1] ? pValues[i][1].toString().trim() : "08:00";
-        let jamPulang = pValues[i][2] ? pValues[i][2].toString().trim() : "20:00";
+        let jamMasuk = parseSheetTime(pValues[i][1]);
+        let jamPulang = parseSheetTime(pValues[i][2]);
+        let enabledVal = pValues[i][3];
+        let enabled = enabledVal === "" || enabledVal === null || enabledVal === undefined || enabledVal === true || enabledVal === "TRUE" || enabledVal === "true" || enabledVal === "ON" || enabledVal === "on";
         positions.push({
           name: pValues[i][0].toString().trim(),
-          jamMasuk: jamMasuk,
-          jamPulang: jamPulang
+          jamMasuk: (jamMasuk && jamMasuk !== "-") ? jamMasuk : "08:00",
+          jamPulang: (jamPulang && jamPulang !== "-") ? jamPulang : "20:00",
+          enabled: enabled
         });
       }
     }
   }
-  if (positions.length === 0) {
-    const b4 = sheet.getRange("B4").getValue();
-    if (b4) {
-      try {
-        let parsed = JSON.parse(b4);
-        positions = parsed.map(function(p) {
-          if (typeof p === 'string') {
-            return { name: p, jamMasuk: "08:00", jamPulang: "20:00" };
-          }
-          return p;
-        });
-      } catch(e) {
-        positions = b4.toString().split(",").map(function(s) { 
-          return { name: s.trim(), jamMasuk: "08:00", jamPulang: "20:00" };
-        }).filter(function(p) { return p.name !== ""; });
-      }
-    }
-  }
+  // Catatan: fallback lama yang membaca Settings!B4 sebagai daftar posisi sudah dihapus.
+  // Sel itu sekarang dipakai untuk "working_days" (bukan daftar posisi), jadi kalau
+  // dibaca sebagai posisi akan menghasilkan data sampah. Kalau sheet DataPosisi tidak
+  // ada/kosong, langsung pakai default di bawah ini.
   if (!positions || positions.length === 0) {
     positions = [
-      { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00" },
-      { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00" },
-      { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00" },
-      { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00" }
+      { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+      { name: "Admin (Training)", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
+      { name: "Pickup", jamMasuk: "14:00", jamPulang: "22:00", enabled: true },
+      { name: "Magang", jamMasuk: "08:00", jamPulang: "17:00", enabled: true }
     ];
   }
   
@@ -335,7 +495,7 @@ function getSettings() {
     }
   }
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, outlets: outlets, positions: positions } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
 }
 
 function saveSettings(data) {
@@ -350,26 +510,33 @@ function saveSettings(data) {
     sheet.getRange("B3").setValue(data.requireLocation ? "TRUE" : "FALSE");
   }
 
+  // Set enableWorkHours ke B8
+  if (data.enableWorkHours !== undefined) {
+    sheet.getRange("B8").setValue(data.enableWorkHours ? "TRUE" : "FALSE");
+  }
+
   // Update positions if provided
   if (data.positions && Array.isArray(data.positions)) {
     let sheetPosisi = ss.getSheetByName("DataPosisi");
     if (!sheetPosisi) {
       sheetPosisi = ss.insertSheet("DataPosisi");
     }
-    sheetPosisi.getRange(1, 1, 1, 3).setValues([["Nama Posisi", "Jam Masuk", "Jam Pulang"]]);
+    sheetPosisi.getRange(1, 1, 1, 4).setValues([["Nama Posisi", "Jam Masuk", "Jam Pulang", "Status Jam"]]);
     const lastRow = sheetPosisi.getLastRow();
     if (lastRow > 1) {
-      sheetPosisi.getRange(2, 1, lastRow - 1, 3).clearContent();
+      sheetPosisi.getRange(2, 1, lastRow - 1, 4).clearContent();
     }
     data.positions.forEach(function(pos, idx) {
       if (pos) {
         let name = typeof pos === 'string' ? pos.trim() : (pos.name || "").trim();
         let jamMasuk = typeof pos === 'object' && pos.jamMasuk ? pos.jamMasuk : "08:00";
         let jamPulang = typeof pos === 'object' && pos.jamPulang ? pos.jamPulang : "20:00";
+        let isEnabled = typeof pos === 'object' && pos.enabled !== undefined ? (pos.enabled ? "TRUE" : "FALSE") : "TRUE";
         if (name) {
           sheetPosisi.getRange(idx + 2, 1).setValue(name);
           sheetPosisi.getRange(idx + 2, 2).setValue(jamMasuk);
           sheetPosisi.getRange(idx + 2, 3).setValue(jamPulang);
+          sheetPosisi.getRange(idx + 2, 4).setValue(isEnabled);
         }
       }
     });
@@ -428,7 +595,9 @@ function getRiwayat(nama) {
   
   const riwayat = [];
   
-  for (let i = values.length - 1; i > 0; i--) {
+  // Baris terbaru ada di row 2 (paling atas), jadi loop dari atas ke bawah
+  // supaya "riwayat" tetap terurut dari yang terbaru.
+  for (let i = 1; i < values.length; i++) {
     if (values[i][1] === nama) {
       riwayat.push({
         tanggal: parseSheetDate(values[i][0]),
@@ -444,7 +613,9 @@ function getRiwayat(nama) {
         lokasiPulang: values[i][10],
         fotoDatang: values[i][11],
         fotoPulang: values[i][12],
-        keterangan: values[i][7] === "IZIN" ? "IZIN" : "HADIR"
+        keterangan: values[i][7] === "IZIN" ? "IZIN" : "HADIR",
+        keteranganDatang: values[i][13] || "-",
+        keteranganPulang: values[i][14] || "-"
       });
       if (riwayat.length >= 31) break; 
     }
@@ -659,46 +830,65 @@ function getRiwayatBulan(nama, bulan) {
     }
   }
   
-  riwayat.reverse(); 
+  // Data di sheet sudah terurut dari row 2 (terbaru) ke bawah, sehingga tidak perlu di-reverse
   return { status: "success", data: riwayat };
 }
 
 /**
- * Robust date formatting helper function to handle both Date objects and various string date formats.
- * Ensures dates are consistently returned in DD/MM/YYYY format.
+ * Robust time formatting helper function to handle Date objects, fractional days, and various string formats.
+ * Ensures times are consistently returned in HH:MM format or "-" if invalid/absent.
  */
 function parseSheetTime(val) {
-  if (val === null || val === undefined || val === "") return "-";
-  if (val === "-") return "-";
+  if (val === null || val === undefined || val === "" || val === "-") return "-";
   
-  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]') {
-    const hh = ("0" + val.getHours()).slice(-2);
-    const mm = ("0" + val.getMinutes()).slice(-2);
-    return hh + ":" + mm;
-  } else if (typeof val === "number") {
-    // Check if it's a fractional day (gas time format)
-    let totalSeconds = Math.round(val * 24 * 60 * 60);
+  // 1. Date object
+  if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]' || (typeof val === 'object' && typeof val.getHours === 'function')) {
+    try {
+      const hh = ("0" + val.getHours()).slice(-2);
+      const mm = ("0" + val.getMinutes()).slice(-2);
+      return hh + ":" + mm;
+    } catch (e) {}
+  }
+  
+  // 2. Number: Google Sheets fractional day or epoch timestamp
+  if (typeof val === "number" && !isNaN(val)) {
+    if (val > 100000000) {
+      try {
+        const d = new Date(val);
+        const hh = ("0" + d.getHours()).slice(-2);
+        const mm = ("0" + d.getMinutes()).slice(-2);
+        return hh + ":" + mm;
+      } catch (e) {}
+    }
+    let frac = val % 1;
+    if (frac < 0) frac += 1;
+    let totalSeconds = Math.round(frac * 86400);
     let h = Math.floor(totalSeconds / 3600) % 24;
     let m = Math.floor((totalSeconds % 3600) / 60);
     return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2);
-  } else if (typeof val === "string") {
-    const s = val.trim();
-    if (s.includes("T") && !isNaN(Date.parse(s))) {
+  }
+  
+  // 3. String
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "[object Object]") return "-";
+  
+  if (s.includes("T") && !isNaN(Date.parse(s))) {
+    try {
       const d = new Date(s);
       const hh = ("0" + d.getHours()).slice(-2);
       const mm = ("0" + d.getMinutes()).slice(-2);
       return hh + ":" + mm;
-    }
-    const match = s.match(/(\d{1,2}):(\d{2})/);
-    if (match) {
-      const hh = ("0" + match[1]).slice(-2);
-      const mm = match[2];
-      return hh + ":" + mm;
-    }
-    return s;
+    } catch (e) {}
   }
   
-  return String(val || "-");
+  const match = s.match(/(?:^|\s|T)?(\d{1,2})[:.](\d{2})(?::\d{2})?(?:\s|$)?/);
+  if (match) {
+    const hh = ("0" + match[1]).slice(-2);
+    const mm = ("0" + match[2]).slice(-2);
+    return hh + ":" + mm;
+  }
+  
+  return "-";
 }
 
 function parseSheetDate(val) {
