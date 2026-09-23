@@ -1498,8 +1498,8 @@ export default function App() {
             jenisIzin: keterangan === "IZIN" ? jenisIzin : "",
             outlet: keterangan === "IZIN" ? "TIDAK MASUK" : targetOutlet,
             alasan: keterangan === "IZIN" ? alasan : (isLate ? keteranganTelat : (isEarlyLeave ? keteranganPulangCepat : "")),
-            lat: userLat,
-            lng: userLng,
+            lat: Number(userLat),
+            lng: Number(userLng),
             image: imageBase64, // Always send image, either selfie or doctor note
             buktiFeishu: "",
             jamDatang: jamDatangTerdata
@@ -1511,7 +1511,8 @@ export default function App() {
           // Simulate submit in AI Studio
           setTimeout(() => {
             setLoadingSubmit(false);
-            toast.success(`✅ Berhasil Absen (Mode Preview). Payload GPS: ${userLat}, ${userLng}`);
+            const mockGps = (Number(userLat) !== 0 && Number(userLng) !== 0) ? `https://maps.google.com/?q=${userLat},${userLng}` : "-";
+            toast.success(`✅ Berhasil Absen (Mode Preview). Lokasi: ${mockGps}`);
             setImageBase64("");
             setBuktiFeishuBase64("");
             setIsFeishuOpen(false);
@@ -1561,80 +1562,123 @@ export default function App() {
     const rawReq = settingsData?.requireLocation;
     const requireLocation = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
 
-    if (keterangan === 'IZIN' || !requireLocation) {
-      sendPayload(0, 0); // Skip GPS requirement for IZIN or if location tracking is disabled
-    } else {
-      setSubmitStatus("Mendapatkan lokasi GPS...");
-      toast.info("Mendapatkan lokasi GPS...");
-      
-      const requestGPS = (useHighAcc: boolean, timeoutMs: number, maxAgeMs: number) => {
-        setSubmitStatus(useHighAcc ? "Mencari GPS akurasi tinggi..." : "Gagal dapat satelit, re-try GPS akurasi rendah...");
+    if (keterangan === 'IZIN') {
+      sendPayload(0, 0); // Skip GPS requirement for IZIN
+      return;
+    }
+
+    // Jika requireLocation = FALSE, coba ambil koordinat GPS secara pasif/cepat jika tersedia, 
+    // jika gagal atau tidak didukung tetap izinkan submit tanpa GPS
+    if (!requireLocation) {
+      if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          async (pos) => {
-            const userLat = pos.coords.latitude;
-            const userLng = pos.coords.longitude;
-
-
-            // Verifikasi Radius Lokasi
-            let outletLat = 0;
-            let outletLng = 0;
-            let maxRadius = 150;
-
-            if (settingsData?.outlets && settingsData.outlets.length > 0) {
-              const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
-              if (selectedOutlet) {
-                outletLat = selectedOutlet.lat;
-                outletLng = selectedOutlet.lng;
-                maxRadius = selectedOutlet.radius || 150;
-              }
+          (pos) => {
+            const userLat = pos?.coords?.latitude;
+            const userLng = pos?.coords?.longitude;
+            if (typeof userLat === "number" && typeof userLng === "number" && Number.isFinite(userLat) && Number.isFinite(userLng) && !(userLat === 0 && userLng === 0)) {
+              sendPayload(userLat, userLng);
             } else {
-              if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
-                outletLat = -6.205649180689262;
-                outletLng = 106.45134398119775;
-              } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
-                outletLat = -6.206571510648256;
-                outletLng = 106.38621792361727;
-              }
+              sendPayload(0, 0);
             }
-
-            if (outletLat !== 0 && outletLng !== 0) {
-              setSubmitStatus("Memeriksa kesesuaian radius dengan outlet...");
-              const distance = calculateDistance(userLat, userLng, outletLat, outletLng);
-
-              if (distance > maxRadius) {
-                setLoadingSubmit(false);
-                setSubmitStatus("");
-                return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${maxRadius} meter.`);
-              }
-            }
-
-            sendPayload(userLat, userLng);
           },
-          (err) => {
-            if (useHighAcc && (err.code === 3 || err.code === 2)) {
-               console.warn("GPS High Accuracy timeout/unavailable. Retrying with Low Accuracy...", err);
-               setSubmitStatus("GPS Timeout. Mencoba sinyal rendah...");
-               toast.info("Sinyal GPS lemah, mencoba alternatif lokasi...");
-               requestGPS(false, 15000, 60000); // Fallback: low accuracy, wait 15s, allow 1 min old cache
-               return;
-            }
-            
+          () => {
+            sendPayload(0, 0);
+          },
+          { enableHighAccuracy: false, timeout: 3000, maximumAge: 60000 }
+        );
+      } else {
+        sendPayload(0, 0);
+      }
+      return;
+    }
+
+    // Mulai alur requireLocation = TRUE
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLoadingSubmit(false);
+      setSubmitStatus("");
+      return toast.error("Browser tidak mendukung GPS/Geolocation. Pastikan izin lokasi aktif dan coba lagi.");
+    }
+
+    setSubmitStatus("Mendapatkan lokasi GPS...");
+    toast.info("Mendapatkan lokasi GPS...");
+    
+    const requestGPS = (useHighAcc: boolean, timeoutMs: number, maxAgeMs: number) => {
+      setSubmitStatus(useHighAcc ? "Mencari GPS akurasi tinggi..." : "Gagal dapat satelit, re-try GPS akurasi rendah...");
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const userLat = pos?.coords?.latitude;
+          const userLng = pos?.coords?.longitude;
+
+          // Validasi GPS sebelum kirim absen
+          const isValidLat = typeof userLat === "number" && Number.isFinite(userLat);
+          const isValidLng = typeof userLng === "number" && Number.isFinite(userLng);
+
+          if (!isValidLat || !isValidLng || (userLat === 0 && userLng === 0)) {
             setLoadingSubmit(false);
             setSubmitStatus("");
-            console.warn("GPS Error:", err);
-            let errMsg = `GPS Error! Pastikan izin lokasi aktif. (${err.message})`;
-            if (err.code === 1) errMsg = "Akses Lokasi Ditolak! Tolong izinkan GPS di pengaturan browser Anda.";
-            else if (err.code === 2) errMsg = "Lokasi Tidak Tersedia! Pastikan GPS perangkat aktif dan ada koneksi internet.";
-            else if (err.code === 3) errMsg = "Pencarian lokasi Timeout. Sinyal lemah, coba di tempat yang lebih terbuka atau gunakan koneksi Wi-Fi.";
-            toast.error(errMsg);
-          },
-          { enableHighAccuracy: useHighAcc, timeout: timeoutMs, maximumAge: maxAgeMs }
-        );
-      };
-      
-      // Attempt 1: High Accuracy, 12 detik, tanpa cache
-      requestGPS(true, 12000, 0);
-    }
+            return toast.error("Lokasi GPS belum tersedia. Pastikan izin lokasi aktif dan coba lagi.");
+          }
+
+          // Verifikasi Radius Lokasi
+          let outletLat = 0;
+          let outletLng = 0;
+          let maxRadius = 150;
+
+          if (settingsData?.outlets && settingsData.outlets.length > 0) {
+            const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
+            if (selectedOutlet) {
+              outletLat = selectedOutlet.lat;
+              outletLng = selectedOutlet.lng;
+              maxRadius = selectedOutlet.radius || 150;
+            }
+          } else {
+            if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
+              outletLat = -6.205649180689262;
+              outletLng = 106.45134398119775;
+            } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
+              outletLat = -6.206571510648256;
+              outletLng = 106.38621792361727;
+            }
+          }
+
+          if (outletLat !== 0 && outletLng !== 0) {
+            setSubmitStatus("Memeriksa kesesuaian radius dengan outlet...");
+            const distance = calculateDistance(userLat, userLng, outletLat, outletLng);
+
+            if (distance > maxRadius) {
+              setLoadingSubmit(false);
+              setSubmitStatus("");
+              return toast.error(`Lokasi Anda terlalu jauh dari outlet! (Jarak: ${Math.round(distance)} meter). Maksimal radius adalah ${maxRadius} meter.`);
+            }
+          }
+
+          // Kirim GPS aktual perangkat pegawai
+          sendPayload(userLat, userLng);
+        },
+        (err) => {
+          if (useHighAcc && (err.code === 3 || err.code === 2)) {
+             console.warn("GPS High Accuracy timeout/unavailable. Retrying with Low Accuracy...", err);
+             setSubmitStatus("GPS Timeout. Mencoba sinyal rendah...");
+             toast.info("Sinyal GPS lemah, mencoba alternatif lokasi...");
+             requestGPS(false, 15000, 60000); // Fallback: low accuracy, wait 15s, allow 1 min old cache
+             return;
+          }
+          
+          setLoadingSubmit(false);
+          setSubmitStatus("");
+          console.warn("GPS Error:", err);
+          let errMsg = "Lokasi GPS belum tersedia. Pastikan izin lokasi aktif dan coba lagi.";
+          if (err.code === 1) errMsg = "Akses Lokasi Ditolak! Tolong izinkan GPS di pengaturan browser Anda.";
+          else if (err.code === 2) errMsg = "Lokasi Tidak Tersedia! Pastikan GPS perangkat aktif dan ada koneksi internet.";
+          else if (err.code === 3) errMsg = "Pencarian lokasi Timeout. Sinyal lemah, coba di tempat yang lebih terbuka atau gunakan koneksi Wi-Fi.";
+          toast.error(errMsg);
+        },
+        { enableHighAccuracy: useHighAcc, timeout: timeoutMs, maximumAge: maxAgeMs }
+      );
+    };
+    
+    // Attempt 1: High Accuracy, 12 detik, tanpa cache
+    requestGPS(true, 12000, 0);
   };
 
 

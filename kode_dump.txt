@@ -209,6 +209,30 @@ function uploadImageToDrive(base64Data, filename) {
   }
 }
 
+/**
+ * Helper untuk membuat URL Google Maps dari koordinat lat, lng.
+ * Mengembalikan format "https://maps.google.com/?q=LAT,LNG" jika valid.
+ * Mengembalikan "-" jika koordinat kosong, tidak valid, atau (0,0).
+ */
+function buildLocationUrl(lat, lng) {
+  if (lat === null || lat === undefined || lat === "" || lng === null || lng === undefined || lng === "") {
+    return "-";
+  }
+  const latitude = Number(lat);
+  const longitude = Number(lng);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return "-";
+  }
+
+  // Jika koordinat 0, 0 (misal izin atau absen tanpa GPS)
+  if (latitude === 0 && longitude === 0) {
+    return "-";
+  }
+
+  return "https://maps.google.com/?q=" + latitude + "," + longitude;
+}
+
 function processForm(data) {
   const ss = getSpreadsheet();
   const dateObj = new Date();
@@ -221,7 +245,7 @@ function processForm(data) {
   
   // Format Jam: HH:MM
   const jam = ("0" + dateObj.getHours()).slice(-2) + ":" + ("0" + dateObj.getMinutes()).slice(-2);
-  const lokasiUrl = (data.lat && data.lng) ? `https://maps.google.com/?q=${data.lat},${data.lng}` : "";
+  const lokasiUrl = buildLocationUrl(data.lat, data.lng);
   
   // Handling Izin / Sakit
   if (data.status === "IZIN" || data.status === "SAKIT") {
