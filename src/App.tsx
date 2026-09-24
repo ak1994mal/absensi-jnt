@@ -193,6 +193,61 @@ export const getDirectDriveUrl = (url: string | null | undefined): string => {
   return str;
 };
 
+export const getTodayString = (): string => {
+  const d = new Date();
+  return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+};
+
+export const normalizeDateStr = (str: string): string => {
+  if (!str) return "";
+  const cleaned = str.trim().replace(/-/g, '/');
+  const parts = cleaned.split('/');
+  if (parts.length === 3) {
+    const d = parts[0].padStart(2, '0');
+    const m = parts[1].padStart(2, '0');
+    const y = parts[2];
+    return `${d}/${m}/${y.length === 2 ? '20' + y : y}`;
+  }
+  return cleaned;
+};
+
+export const hasValidTime = (val: any): boolean => {
+  if (val === null || val === undefined || val === "" || val === "-") return false;
+  const formatted = formatSheetTime(val);
+  return formatted !== "-" && formatted !== "";
+};
+
+export const isToday = (dateVal: any): boolean => {
+  if (!dateVal) return false;
+  const formatted = formatSheetDate(dateVal);
+  const normRecord = normalizeDateStr(formatted);
+  const normToday = normalizeDateStr(getTodayString());
+  const normTodayLocal = normalizeDateStr(new Date().toLocaleDateString('id-ID'));
+  return normRecord === normToday || normRecord === normTodayLocal;
+};
+
+export const findOpenAttendanceToday = (records: any[]): any | null => {
+  if (!Array.isArray(records)) return null;
+  return records.find(r => 
+    isToday(r.tanggal) &&
+    r.statusMasuk !== 'IZIN' &&
+    r.keterangan !== 'IZIN' &&
+    hasValidTime(r.jamDatang) &&
+    !hasValidTime(r.jamPulang)
+  ) || null;
+};
+
+export const findClosedAttendanceToday = (records: any[]): any | null => {
+  if (!Array.isArray(records)) return null;
+  return records.find(r =>
+    isToday(r.tanggal) &&
+    r.statusMasuk !== 'IZIN' &&
+    r.keterangan !== 'IZIN' &&
+    hasValidTime(r.jamDatang) &&
+    hasValidTime(r.jamPulang)
+  ) || null;
+};
+
 
 type StatusAbsen = "DATANG" | "PULANG" | "IZIN";
 type PosisiPegawai = string;
@@ -453,34 +508,12 @@ export default function App() {
   const lastScheduledNotificationDateRef = useRef("");
 
 
-  const getTodayString = () => {
-    const d = new Date();
-    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
-  };
-
-  const normalizeDateStr = (str: string) => {
-    if (!str) return "";
-    const cleaned = str.trim().replace(/-/g, '/');
-    const parts = cleaned.split('/');
-    if (parts.length === 3) {
-      const d = parts[0].padStart(2, '0');
-      const m = parts[1].padStart(2, '0');
-      const y = parts[2];
-      return `${d}/${m}/${y.length === 2 ? '20' + y : y}`;
-    }
-    return cleaned;
-  };
-
-
   const todayStr = getTodayString();
   const normalizedToday = normalizeDateStr(todayStr);
-  const absenHariIni = riwayat.find(r => {
-    if (!r.tanggal) return false;
-    const normTanggal = normalizeDateStr(r.tanggal);
-    const normToday1 = normalizedToday;
-    const normToday2 = normalizeDateStr(new Date().toLocaleDateString('id-ID'));
-    return normTanggal === normToday1 || normTanggal === normToday2;
-  });
+  const openAttendanceToday = findOpenAttendanceToday(riwayat);
+  const closedAttendanceToday = findClosedAttendanceToday(riwayat);
+  // Absen hari ini: prioritaskan record terbuka jika ada, lalu record closed, atau record hari ini apapun
+  const absenHariIni = openAttendanceToday || closedAttendanceToday || riwayat.find(r => isToday(r?.tanggal));
 
 
 
@@ -503,8 +536,8 @@ export default function App() {
       if (now.getHours() === 8 && now.getMinutes() === 0) {
         const dateStr = now.toDateString();
         if (lastScheduledNotificationDateRef.current !== dateStr) {
-          // Periksa apakah sudah absen datang hari ini
-          const sudahAbsenCheck = absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-";
+          // Periksa apakah sudah absen datang hari ini (baik open maupun closed)
+          const sudahAbsenCheck = (openAttendanceToday || closedAttendanceToday) && hasValidTime((openAttendanceToday || closedAttendanceToday)?.jamDatang);
           if (!sudahAbsenCheck) {
             lastScheduledNotificationDateRef.current = dateStr;
             if (Notification.permission === 'granted') {
@@ -521,7 +554,7 @@ export default function App() {
     }, 30000); // Periksa tiap 30 detik agar tidak melewatkan menit awal
 
     return () => clearInterval(interval);
-  }, [absenHariIni]);
+  }, [openAttendanceToday, closedAttendanceToday]);
 
   useEffect(() => {
     if (!('Notification' in window) || !('geolocation' in navigator)) return;
@@ -535,7 +568,7 @@ export default function App() {
         if (hasNotifiedGeoRef.current) return;
         
         // Jika sudah absen hari ini, tak perlu notifikasi
-        if (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-") return;
+        if ((openAttendanceToday || closedAttendanceToday) && hasValidTime((openAttendanceToday || closedAttendanceToday)?.jamDatang)) return;
 
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
@@ -566,7 +599,7 @@ export default function App() {
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [absenHariIni, settingsData?.outlets, settingsData?.requireLocation]);
+  }, [openAttendanceToday, closedAttendanceToday, settingsData?.outlets, settingsData?.requireLocation]);
 
 
   const getSisaWaktuKerja = (jamDatangStr: any, targetJam: number) => {
@@ -656,11 +689,14 @@ export default function App() {
 
 
   useEffect(() => {
-    if (keterangan === "PULANG" && absenHariIni) {
-      if (absenHariIni.outlet) setOutlet(absenHariIni.outlet);
-      if (absenHariIni.posisi) setPosisi(absenHariIni.posisi as PosisiPegawai);
+    if (keterangan === "PULANG") {
+      const targetRecord = openAttendanceToday || closedAttendanceToday || absenHariIni;
+      if (targetRecord) {
+        if (targetRecord.outlet) setOutlet(targetRecord.outlet);
+        if (targetRecord.posisi) setPosisi(targetRecord.posisi as PosisiPegawai);
+      }
     }
-  }, [keterangan, absenHariIni]);
+  }, [keterangan, openAttendanceToday, closedAttendanceToday]);
 
 
   const fetchPegawai = async () => {
@@ -722,8 +758,8 @@ export default function App() {
     if (!GAS_URL) {
       setTimeout(() => {
         setRiwayat([
-          { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "20:00", statusMasuk: "TEPAT WAKTU", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-          { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
+          { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "-", totalJam: "-", statusMasuk: "TEPAT WAKTU", statusPulang: "-", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
+          { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", totalJam: "11j 30m", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
         ]);
         setLoadingRiwayat(false);
       }, 800);
@@ -752,8 +788,8 @@ export default function App() {
     } catch (e: any) {
       console.warn(`[fetchRiwayat] Mode offline / fallback:`, e?.message || e);
       setRiwayat([
-        { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "20:00", statusMasuk: "TEPAT WAKTU", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-        { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
+        { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "-", totalJam: "-", statusMasuk: "TEPAT WAKTU", statusPulang: "-", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
+        { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", totalJam: "11j 30m", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
       ]);
       setErrorRiwayat("");
     } finally {
@@ -1434,11 +1470,16 @@ export default function App() {
     if (keterangan !== "PULANG" && !posisi) return toast.error("Pilih Posisi terlebih dahulu!");
     
     if (keterangan === "PULANG") {
-      if (!absenHariIni || !absenHariIni.jamDatang || absenHariIni.jamDatang === "-") {
+      // 1. Cari record terbuka hari ini (open attendance: tanggal hari ini, jamDatang valid, belum ada jamPulang)
+      const openRecord = findOpenAttendanceToday(riwayat);
+      if (!openRecord) {
+        // 2. Jika tidak ada record terbuka, periksa apakah sudah ada record hari ini yang sudah pulang
+        const closedRecord = findClosedAttendanceToday(riwayat);
+        if (closedRecord) {
+          return toast.error("Anda sudah melakukan absen PULANG hari ini!");
+        }
+        // 3. Jika belum pernah absen datang hari ini
         return toast.error("Anda belum absen DATANG hari ini!");
-      }
-      if (absenHariIni.jamPulang && absenHariIni.jamPulang !== "-") {
-        return toast.error("Anda sudah melakukan absen PULANG hari ini!");
       }
     }
 
@@ -1446,7 +1487,7 @@ export default function App() {
     if (keterangan === "DATANG" && outlet) {
       const sudahAbsenDiOutletIni = riwayat.some(r => {
         if (!r.tanggal) return false;
-        return normalizeDateStr(r.tanggal) === normalizedToday && r.outlet === outlet && r.jamDatang && r.jamDatang !== "-";
+        return isToday(r.tanggal) && r.outlet === outlet && hasValidTime(r.jamDatang);
       });
       if (sudahAbsenDiOutletIni) {
         return toast.error("Anda sudah melakukan absen DATANG hari ini di outlet ini! Kalau backup shift di outlet lain, pilih outlet yang berbeda.");
@@ -1475,16 +1516,12 @@ export default function App() {
 
         // Dapatkan jam datang jika status PULANG untuk mencegah error di backend
         let jamDatangTerdata = "";
-        const targetOutlet = (keterangan === "PULANG" && absenHariIni?.outlet) ? absenHariIni.outlet : (outlet || "-");
-        const targetPosisi = (keterangan === "PULANG" && absenHariIni?.posisi) ? (absenHariIni.posisi as PosisiPegawai) : (posisi || "");
+        const openRecord = findOpenAttendanceToday(riwayat);
+        const targetOutlet = (keterangan === "PULANG" && openRecord?.outlet) ? openRecord.outlet : (outlet || "-");
+        const targetPosisi = (keterangan === "PULANG" && openRecord?.posisi) ? (openRecord.posisi as PosisiPegawai) : (posisi || "");
 
         if (keterangan === "PULANG") {
-          const raw = (absenHariIni && absenHariIni.jamDatang && absenHariIni.jamDatang !== "-")
-            ? absenHariIni.jamDatang
-            : (riwayat.find(r => 
-                r.tanggal && normalizeDateStr(r.tanggal) === normalizedToday && 
-                r.jamDatang && r.jamDatang !== "-"
-              )?.jamDatang || "");
+          const raw = openRecord?.jamDatang || "";
           const formatted = formatSheetTime(raw);
           jamDatangTerdata = (formatted && formatted !== "-") ? formatted : "";
         }

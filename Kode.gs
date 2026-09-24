@@ -298,19 +298,31 @@ function processForm(data) {
   // di outlet lain di hari yang sama (mis. jadi backup shift di outlet berbeda)
   // tanpa dianggap "sudah absen" oleh outlet asalnya.
   // Kolom A (0) = Tanggal, Kolom B (1) = Nama, Kolom D (3) = Outlet, Kolom H (7) = Status Masuk
-  for (let i = 1; i < dataRange.length; i++) { 
-    const rowTanggal = parseSheetDate(dataRange[i][0]);
-    if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
-      userRowIndex = i + 1;
-      break;
-    }
-  }
-
-  // Fallback pencarian untuk PULANG jika outlet tidak persis sama (misal ada perbedaan spasi)
-  if (userRowIndex === -1 && data.status === "PULANG") {
-    for (let i = 1; i < dataRange.length; i++) {
+  if (data.status === "PULANG") {
+    // 1. Cari baris hari ini untuk Nama + Outlet yang MASIH TERBUKA (jam pulang belum terisi / "-")
+    for (let i = 1; i < dataRange.length; i++) { 
       const rowTanggal = parseSheetDate(dataRange[i][0]);
-      if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN") {
+      const rowJamPulang = parseSheetTime(dataRange[i][5]);
+      if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN" && rowJamPulang === "-") { 
+        userRowIndex = i + 1;
+        break;
+      }
+    }
+    // 2. Fallback pencarian untuk PULANG jika outlet tidak persis sama (misal ada perbedaan spasi)
+    if (userRowIndex === -1) {
+      for (let i = 1; i < dataRange.length; i++) {
+        const rowTanggal = parseSheetDate(dataRange[i][0]);
+        const rowJamPulang = parseSheetTime(dataRange[i][5]);
+        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN" && rowJamPulang === "-") {
+          userRowIndex = i + 1;
+          break;
+        }
+      }
+    }
+  } else {
+    for (let i = 1; i < dataRange.length; i++) { 
+      const rowTanggal = parseSheetDate(dataRange[i][0]);
+      if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
         userRowIndex = i + 1;
         break;
       }
@@ -372,10 +384,23 @@ function processForm(data) {
     
   } else if (data.status === "PULANG") {
     if (userRowIndex === -1) {
+      // Cek apakah pegawai sebenarnya sudah pernah datang dan sudah pulang hari ini
+      let sudahPernahPulang = false;
+      for (let i = 1; i < dataRange.length; i++) {
+        const rowTanggal = parseSheetDate(dataRange[i][0]);
+        const rowJamPulang = parseSheetTime(dataRange[i][5]);
+        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN" && rowJamPulang !== "-") {
+          sudahPernahPulang = true;
+          break;
+        }
+      }
+      if (sudahPernahPulang) {
+        return { status: "error", message: "Anda sudah absen PULANG hari ini." };
+      }
       return { status: "error", message: "Anda belum absen DATANG hari ini." };
     }
     // Jam Pulang ada di kolom F (index 5)
-    if (dataRange[userRowIndex - 1][5] && dataRange[userRowIndex - 1][5] !== "-") { 
+    if (parseSheetTime(dataRange[userRowIndex - 1][5]) !== "-") { 
       return { status: "error", message: "Anda sudah absen PULANG hari ini." };
     }
     
