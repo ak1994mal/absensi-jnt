@@ -248,6 +248,10 @@ export const findClosedAttendanceToday = (records: any[]): any | null => {
   ) || null;
 };
 
+export const normalizeOutletName = (name: string | null | undefined): string => {
+  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+};
+
 
 type StatusAbsen = "DATANG" | "PULANG" | "IZIN";
 type PosisiPegawai = string;
@@ -506,6 +510,40 @@ export default function App() {
   const feishuImageInputRef = useRef<HTMLInputElement>(null);
   const hasNotifiedGeoRef = useRef(false);
   const lastScheduledNotificationDateRef = useRef("");
+  const lastKnownLocationRef = useRef<{ lat: number, lng: number, timestamp: number } | null>(null);
+
+  // Background passive location watcher to ensure GPS coordinates are warm and never blank
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const uLat = pos?.coords?.latitude;
+        const uLng = pos?.coords?.longitude;
+        if (typeof uLat === "number" && typeof uLng === "number" && Number.isFinite(uLat) && Number.isFinite(uLng) && !(uLat === 0 && uLng === 0)) {
+          lastKnownLocationRef.current = { lat: uLat, lng: uLng, timestamp: Date.now() };
+        }
+      },
+      () => {},
+      { enableHighAccuracy: false, timeout: 6000, maximumAge: 300000 }
+    );
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const uLat = pos?.coords?.latitude;
+        const uLng = pos?.coords?.longitude;
+        if (typeof uLat === "number" && typeof uLng === "number" && Number.isFinite(uLat) && Number.isFinite(uLng) && !(uLat === 0 && uLng === 0)) {
+          lastKnownLocationRef.current = { lat: uLat, lng: uLng, timestamp: Date.now() };
+        }
+      },
+      () => {},
+      { enableHighAccuracy: false, maximumAge: 60000, timeout: 20000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, []);
 
 
   const todayStr = getTodayString();
@@ -690,15 +728,42 @@ export default function App() {
   const isEarlyLeave = checkIfEarlyLeave();
 
 
+  const matchOutletOption = (rawOutlet: string | undefined): string => {
+    if (!rawOutlet) return "";
+    const list = (settingsData?.outlets && settingsData.outlets.length > 0) ? settingsData.outlets : OUTLETS;
+    const norm = normalizeOutletName(rawOutlet);
+    const found = list.find((o: any) => normalizeOutletName(o.nama || o.name) === norm);
+    return found ? (found.nama || found.name) : rawOutlet;
+  };
+
+  const matchPosisiOption = (rawPosisi: string | undefined): PosisiPegawai => {
+    if (!rawPosisi) return "";
+    const norm = rawPosisi.toLowerCase().trim();
+    const found = availablePositions.find(p => p.name.toLowerCase().trim() === norm);
+    return (found ? found.name : rawPosisi) as PosisiPegawai;
+  };
+
+  // 1. Auto-fill Posisi, Aktivitas (PULANG), dan Outlet ketika nama pegawai dipilih dan terdeteksi absen DATANG aktif
+  useEffect(() => {
+    if (!nama) return;
+    const openRecord = findOpenAttendanceToday(riwayat);
+    if (openRecord) {
+      setKeterangan("PULANG");
+      if (openRecord.outlet) setOutlet(matchOutletOption(openRecord.outlet));
+      if (openRecord.posisi) setPosisi(matchPosisiOption(openRecord.posisi));
+    }
+  }, [nama, riwayat, settingsData?.outlets]);
+
+  // 2. Sinkronisasi otomatis saat aktivitas diubah manual ke "PULANG"
   useEffect(() => {
     if (keterangan === "PULANG") {
       const targetRecord = openAttendanceToday || closedAttendanceToday || absenHariIni;
       if (targetRecord) {
-        if (targetRecord.outlet) setOutlet(targetRecord.outlet);
-        if (targetRecord.posisi) setPosisi(targetRecord.posisi as PosisiPegawai);
+        if (targetRecord.outlet) setOutlet(matchOutletOption(targetRecord.outlet));
+        if (targetRecord.posisi) setPosisi(matchPosisiOption(targetRecord.posisi));
       }
     }
-  }, [keterangan, openAttendanceToday, closedAttendanceToday]);
+  }, [keterangan, openAttendanceToday, closedAttendanceToday, absenHariIni, settingsData?.outlets]);
 
 
   const fetchPegawai = async () => {
@@ -784,6 +849,12 @@ export default function App() {
         }));
         setRiwayat(formattedData);
         setErrorRiwayat("");
+        const openRec = findOpenAttendanceToday(formattedData);
+        if (openRec) {
+          setKeterangan("PULANG");
+          if (openRec.outlet) setOutlet(matchOutletOption(openRec.outlet));
+          if (openRec.posisi) setPosisi(matchPosisiOption(openRec.posisi));
+        }
       } else {
         throw new Error(data.message || 'Unknown error');
       }
@@ -1005,6 +1076,25 @@ export default function App() {
 
   const [savingSettings, setSavingSettings] = useState(false);
 
+  const sendSaveSettings = async (data: any) => {
+    const payload = {
+      action: 'saveSettings',
+      data
+    };
+    try {
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      return await parseApiResponse(response, 'saveSettings');
+    } catch (err: any) {
+      console.warn("[saveSettings] POST error, trying GET fallback:", err?.message || err);
+      const url = `${GAS_URL}?action=saveSettings&data=${encodeURIComponent(JSON.stringify(data))}`;
+      const response = await fetch(url, { cache: 'no-store' });
+      return await parseApiResponse(response, 'saveSettings');
+    }
+  };
+
   const toggleLocationTracking = async () => {
     const rawReq = settingsData?.requireLocation;
     const currentIsRequired = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
@@ -1032,20 +1122,12 @@ export default function App() {
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan pengaturan...");
     try {
-      const payload = {
-        action: 'saveSettings',
-        data: { 
-          requireLocation: newStatus,
-          enableWorkHours: workHoursActive,
-          outlets: settingsData?.outlets || [],
-          positions: availablePositions
-        }
-      };
-      const response = await fetch(GAS_URL, {
-        method: "POST",
-        body: JSON.stringify(payload)
+      const result = await sendSaveSettings({ 
+        requireLocation: newStatus,
+        enableWorkHours: workHoursActive,
+        outlets: settingsData?.outlets || [],
+        positions: availablePositions
       });
-      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Pengaturan lokasi berhasil disimpan.", { id: loadingToastId });
       } else {
@@ -1084,20 +1166,12 @@ export default function App() {
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan pengaturan jam kerja...");
     try {
-      const payload = {
-        action: 'saveSettings',
-        data: { 
-          requireLocation: isCurrentlyReq,
-          enableWorkHours: newStatus,
-          outlets: settingsData?.outlets || [],
-          positions: availablePositions
-        }
-      };
-      const response = await fetch(GAS_URL, {
-        method: "POST",
-        body: JSON.stringify(payload)
+      const result = await sendSaveSettings({ 
+        requireLocation: isCurrentlyReq,
+        enableWorkHours: newStatus,
+        outlets: settingsData?.outlets || [],
+        positions: availablePositions
       });
-      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success(`Aturan jam masuk/pulang berhasil ${newStatus ? 'diaktifkan' : 'dinonaktifkan'}.`, { id: loadingToastId });
       } else {
@@ -1137,20 +1211,12 @@ export default function App() {
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan koordinat outlet...");
     try {
-      const payload = {
-        action: 'saveSettings',
-        data: { 
-          requireLocation: isCurrentlyReq,
-          enableWorkHours: workHoursActive,
-          outlets: updatedOutlets,
-          positions: availablePositions
-        }
-      };
-      const response = await fetch(GAS_URL, {
-        method: "POST",
-        body: JSON.stringify(payload)
+      const result = await sendSaveSettings({ 
+        requireLocation: isCurrentlyReq,
+        enableWorkHours: workHoursActive,
+        outlets: updatedOutlets,
+        positions: availablePositions
       });
-      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Koordinat outlet berhasil disimpan ke Google Sheets.", { id: loadingToastId });
       } else {
@@ -1189,20 +1255,12 @@ export default function App() {
     setSavingSettings(true);
     const loadingToastId = toast.loading("Menyimpan daftar posisi...");
     try {
-      const payload = {
-        action: 'saveSettings',
-        data: { 
-          requireLocation: isCurrentlyReq,
-          enableWorkHours: workHoursActive,
-          outlets: settingsData?.outlets || [],
-          positions: updatedPositions
-        }
-      };
-      const response = await fetch(GAS_URL, {
-        method: "POST",
-        body: JSON.stringify(payload)
+      const result = await sendSaveSettings({ 
+        requireLocation: isCurrentlyReq,
+        enableWorkHours: workHoursActive,
+        outlets: settingsData?.outlets || [],
+        positions: updatedPositions
       });
-      const result = await parseApiResponse(response, 'saveSettings');
       if (result.status === "success") {
         toast.success("Daftar posisi berhasil disimpan ke Google Sheets.", { id: loadingToastId });
       } else {
@@ -1528,6 +1586,7 @@ export default function App() {
           jamDatangTerdata = (formatted && formatted !== "-") ? formatted : "";
         }
         
+        const effectiveGpsUrl = (Number(userLat) !== 0 && Number(userLng) !== 0) ? `https://maps.google.com/?q=${userLat},${userLng}` : "-";
         const payload = {
           action: "processForm",
           data: {
@@ -1539,6 +1598,9 @@ export default function App() {
             alasan: keterangan === "IZIN" ? alasan : (isLate ? keteranganTelat : (isEarlyLeave ? keteranganPulangCepat : "")),
             lat: Number(userLat),
             lng: Number(userLng),
+            lokasi: effectiveGpsUrl,
+            lokasiPulang: effectiveGpsUrl,
+            lokasiDatang: effectiveGpsUrl,
             image: imageBase64, // Always send image, either selfie or doctor note
             buktiFeishu: "",
             jamDatang: jamDatangTerdata
@@ -1609,24 +1671,32 @@ export default function App() {
     // Jika requireLocation = FALSE, coba ambil koordinat GPS secara pasif/cepat jika tersedia, 
     // jika gagal atau tidak didukung tetap izinkan submit tanpa GPS
     if (!requireLocation) {
+      if (lastKnownLocationRef.current && (Date.now() - lastKnownLocationRef.current.timestamp < 300000)) {
+        sendPayload(lastKnownLocationRef.current.lat, lastKnownLocationRef.current.lng);
+        return;
+      }
       if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             const userLat = pos?.coords?.latitude;
             const userLng = pos?.coords?.longitude;
             if (typeof userLat === "number" && typeof userLng === "number" && Number.isFinite(userLat) && Number.isFinite(userLng) && !(userLat === 0 && userLng === 0)) {
+              lastKnownLocationRef.current = { lat: userLat, lng: userLng, timestamp: Date.now() };
               sendPayload(userLat, userLng);
             } else {
-              sendPayload(0, 0);
+              const cached = lastKnownLocationRef.current;
+              sendPayload(cached ? cached.lat : 0, cached ? cached.lng : 0);
             }
           },
           () => {
-            sendPayload(0, 0);
+            const cached = lastKnownLocationRef.current;
+            sendPayload(cached ? cached.lat : 0, cached ? cached.lng : 0);
           },
-          { enableHighAccuracy: false, timeout: 3000, maximumAge: 60000 }
+          { enableHighAccuracy: false, timeout: 6000, maximumAge: 120000 }
         );
       } else {
-        sendPayload(0, 0);
+        const cached = lastKnownLocationRef.current;
+        sendPayload(cached ? cached.lat : 0, cached ? cached.lng : 0);
       }
       return;
     }
@@ -1663,18 +1733,22 @@ export default function App() {
           let outletLng = 0;
           let maxRadius = 150;
 
+          const openRec = findOpenAttendanceToday(riwayat);
+          const effectiveOutlet = (keterangan === "PULANG" && openRec?.outlet) ? openRec.outlet : outlet;
+
           if (settingsData?.outlets && settingsData.outlets.length > 0) {
-            const selectedOutlet = settingsData.outlets.find((o: any) => o.nama === outlet);
+            const selectedOutlet = settingsData.outlets.find((o: any) => normalizeOutletName(o.nama) === normalizeOutletName(effectiveOutlet));
             if (selectedOutlet) {
               outletLat = selectedOutlet.lat;
               outletLng = selectedOutlet.lng;
               maxRadius = selectedOutlet.radius || 150;
             }
           } else {
-            if (outlet === "YZ_ MDP PASIR JAHA BALARAJA") {
+            const normOutlet = normalizeOutletName(effectiveOutlet);
+            if (normOutlet.includes("pasirjaha")) {
               outletLat = -6.205649180689262;
               outletLng = 106.45134398119775;
-            } else if (outlet === "YZ_ MDP JAYANTI CIKANDE") {
+            } else if (normOutlet.includes("jayanti")) {
               outletLat = -6.206571510648256;
               outletLng = 106.38621792361727;
             }
@@ -1691,7 +1765,8 @@ export default function App() {
             }
           }
 
-          // Kirim GPS aktual perangkat pegawai
+          // Simpan koordinat aktif dan kirim payload
+          lastKnownLocationRef.current = { lat: userLat, lng: userLng, timestamp: Date.now() };
           sendPayload(userLat, userLng);
         },
         (err) => {
@@ -1862,10 +1937,16 @@ export default function App() {
                 className="w-full p-2.5 bg-neutral-50 border border-neutral-300 rounded-md focus:ring-2 focus:ring-[#cc0000] outline-none transition disabled:opacity-60 disabled:bg-neutral-100 font-medium text-neutral-800"
               >
                 <option value="" disabled>Pilih Posisi</option>
+                {posisi && !availablePositions.some(p => p.name === posisi) && (
+                  <option value={posisi}>{posisi}</option>
+                )}
                 {availablePositions.map((p) => (
                   <option key={p.name} value={p.name}>{p.name}</option>
                 ))}
               </select>
+              {keterangan === 'PULANG' && (
+                <p className="text-[11px] text-neutral-500 mt-1">Otomatis diambil dari data absen DATANG aktif.</p>
+              )}
             </div>
 
 
@@ -1882,6 +1963,11 @@ export default function App() {
                 <option value="PULANG">PULANG (Selesai)</option>
                 <option value="IZIN">IZIN (Tidak Masuk)</option>
               </select>
+              {keterangan === 'PULANG' && openAttendanceToday && (
+                <div className="mt-1.5 p-2 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800">
+                  Absen DATANG aktif terdeteksi ({openAttendanceToday.outlet || outlet || '-'}).
+                </div>
+              )}
             </div>
 
 
@@ -1958,6 +2044,9 @@ export default function App() {
                     className="w-full p-2.5 bg-neutral-50 border border-neutral-300 rounded-md focus:ring-2 focus:ring-[#cc0000] outline-none transition disabled:opacity-60 disabled:bg-neutral-100"
                   >
                     <option value="" disabled>Pilih Lokasi Outlet</option>
+                    {outlet && !(settingsData?.outlets && settingsData.outlets.some((o: any) => o.nama === outlet)) && !["YZ_ MDP PASIR JAHA BALARAJA", "YZ_ MDP JAYANTI CIKANDE"].includes(outlet) && (
+                      <option value={outlet}>{outlet}</option>
+                    )}
                     {settingsData?.outlets && settingsData.outlets.length > 0 ? (
                       settingsData.outlets.map((o: any) => (
                         <option key={o.nama} value={o.nama}>{o.nama}</option>
@@ -1969,6 +2058,9 @@ export default function App() {
                       </>
                     )}
                   </select>
+                  {keterangan === 'PULANG' && (
+                    <p className="text-[11px] text-neutral-500 mt-1">Otomatis diambil dari data absen DATANG aktif.</p>
+                  )}
                 </div>
               </div>
             )}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Globe, RefreshCw, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, X, ExternalLink, Download, FileCode } from 'lucide-react';
 import { toast } from 'sonner';
-import { parseApiResponse, DEFAULT_GAS_URL, BACKUP_LEGACY_GAS_URL } from '../api';
+import { parseApiResponse, DEFAULT_GAS_URL } from '../api';
 import { KODE_GS_CODE } from '../kodeGsSource';
 
 interface GasUrlModalProps {
@@ -205,17 +205,9 @@ export default function GasUrlModal({
                     type="button"
                     onClick={() => setUrlInput(DEFAULT_GAS_URL)}
                     className="px-2.5 py-1 text-[11px] text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded font-semibold border border-emerald-200 transition"
-                    title="URL Web App Aktif (Teruji Normalisasi Waktu)"
+                    title="URL Web App Default Production"
                   >
-                    Pakai URL Aktif (Verified)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setUrlInput(BACKUP_LEGACY_GAS_URL)}
-                    className="px-2.5 py-1 text-[11px] text-neutral-500 hover:text-neutral-800 underline"
-                    title="URL Deployment Cadangan"
-                  >
-                    URL Cadangan
+                    Pakai URL Default (Production)
                   </button>
                 </div>
               </div>

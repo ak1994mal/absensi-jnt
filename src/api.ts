@@ -1,16 +1,23 @@
 // API Helper for Google Apps Script Integration
 
-// Active production GAS Web App URL (Verified with robust time normalization)
-export const DEFAULT_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
+// Active production GAS Web App URL
+export const DEFAULT_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
 
-// Deprecated legacy deployment (kept for manual reference, never called automatically)
-export const BACKUP_LEGACY_GAS_URL = "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
+// Invalid 404 URL blacklist to prevent using stale broken link from localStorage
+const INVALID_GAS_URLS = [
+  "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec"
+];
 
 export const getStoredGasUrl = (): string => {
   try {
     const saved = localStorage.getItem("custom_gas_url");
-    if (saved && saved.trim().startsWith("https://script.google.com/macros/s/")) {
-      return saved.trim();
+    if (saved) {
+      const trimmed = saved.trim();
+      if (trimmed.startsWith("https://script.google.com/macros/s/") && !INVALID_GAS_URLS.includes(trimmed)) {
+        return trimmed;
+      } else {
+        localStorage.removeItem("custom_gas_url");
+      }
     }
   } catch (e) {}
   return DEFAULT_GAS_URL;

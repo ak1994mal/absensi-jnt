@@ -113,6 +113,13 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 
 ## 📝 5. Log Pembaruan (Changelog)
 
+### [v2.5.2] — 24 September 2026
+- **FIX (Lokasi Pulang Kosong, Auto-Fill Pulang pada Form, & Error Simpan Pengaturan 404):**
+  - **Bug 1 (Lokasi Pulang Kosong):** Menambahkan `lokasi` dan `lokasiPulang` pada payload transaksi PULANG di `src/App.tsx`. Mengimplementasikan `lastKnownLocationRef` dan passive background GPS watcher agar koordinat lokasi selalu tersedia (tidak kosong). Pada `Kode.gs`, nilai kolom K (Lokasi Pulang) diproteksi dengan fallback `lokasiUrl || "-"` sehingga tidak akan pernah kosong atau tertimpa string kosong.
+  - **Bug 2 (Auto-Fill Pulang saat Pilih Nama Pegawai):** Menambahkan logika deteksi otomatis saat nama pegawai dipilih (`nama` & `riwayat`): jika terdeteksi record DATANG aktif hari ini (`openAttendanceToday`), formulir otomatis mengatur Aktivitas ke `PULANG`, serta auto-fill `posisi` dan `outlet` dari record datang aktif. Ditambahkan helper `normalizeOutletName` untuk toleransi spasi/casing (`YZ_MDP Jayanti Cikande` vs `YZ_ MDP JAYANTI CIKANDE`).
+  - **Bug 3 (Error 404 saat Simpan Pengaturan Owner):** Memperbaiki URL default `DEFAULT_GAS_URL` di `src/api.ts` yang sebelumnya mengarah ke deployment 404, mengembalikannya ke URL deployment aktif repository, serta mem-blacklist URL 404 di `localStorage`. Menambahkan fungsi `sendSaveSettings` dengan fallback otomatis POST & GET, dan menambahkan handler `saveSettings` di `doGet` `Kode.gs`.
+  - Sinkronisasi `Kode.gs` ke `src/kodeGsSource.ts` dengan versi `2026-09-24-v2.5.2`.
+
 ### [v2.5.1] — 24 September 2026
 - **FIX (Diagnosis & Penyelesaian Live Bug TypeError: jamDatang.split):**
   - Mengaudit dan membuktikan bahwa URL `DEFAULT_GAS_URL` sebelumnya mengarah ke deployment lama Google Apps Script yang belum ter-update dan mengembalikan `TypeError: jamDatang.split is not a function`.

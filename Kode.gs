@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-09-24-v2.5.1";
+const BACKEND_VERSION = "2026-09-24-v2.5.2";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -27,7 +27,7 @@ function getDeploymentInfo() {
     backendVersion: BACKEND_VERSION,
     serverTime: new Date().toISOString(),
     parserVersion: "safe-time-parser-v2",
-    features: ["prependRow2", "robustTimeParser", "multiOutletSearch", "gpsUrl", "displayValues"]
+    features: ["prependRow2", "robustTimeParser", "multiOutletSearch", "gpsUrl", "displayValues", "saveSettingsViaGetAndPost"]
   };
 }
 
@@ -53,6 +53,12 @@ function doGet(e) {
       result = getRiwayatBulan(e.parameter.nama, e.parameter.bulan);
     } else if (action === 'getSettings') {
       result = getSettings();
+    } else if (action === 'saveSettings') {
+      let dataObj = {};
+      try {
+        dataObj = JSON.parse(e.parameter.data || "{}");
+      } catch (err) {}
+      result = saveSettings(dataObj);
     } else {
       result = { status: 'error', message: 'Aksi GET tidak valid', backendVersion: BACKEND_VERSION };
     }
@@ -226,11 +232,14 @@ function uploadImageToDrive(base64Data, filename) {
 }
 
 /**
- * Helper untuk membuat URL Google Maps dari koordinat lat, lng.
+ * Helper untuk membuat URL Google Maps dari koordinat lat, lng atau URL raw.
  * Mengembalikan format "https://maps.google.com/?q=LAT,LNG" jika valid.
  * Mengembalikan "-" jika koordinat kosong, tidak valid, atau (0,0).
  */
-function buildLocationUrl(lat, lng) {
+function buildLocationUrl(lat, lng, rawUrl) {
+  if (rawUrl && typeof rawUrl === "string" && (rawUrl.startsWith("http://") || rawUrl.startsWith("https://"))) {
+    return rawUrl;
+  }
   if (lat === null || lat === undefined || lat === "" || lng === null || lng === undefined || lng === "") {
     return "-";
   }
@@ -262,7 +271,10 @@ function processForm(data) {
     
     // Format Jam: HH:MM
     const jam = ("0" + dateObj.getHours()).slice(-2) + ":" + ("0" + dateObj.getMinutes()).slice(-2);
-    const lokasiUrl = buildLocationUrl(data.lat, data.lng);
+    const lat = data.lat !== undefined && data.lat !== null && data.lat !== "" ? Number(data.lat) : (data.latitude ? Number(data.latitude) : null);
+    const lng = data.lng !== undefined && data.lng !== null && data.lng !== "" ? Number(data.lng) : (data.longitude ? Number(data.longitude) : null);
+    const rawLokasi = data.lokasi || data.lokasiPulang || data.lokasiDatang || "";
+    const lokasiUrl = buildLocationUrl(lat, lng, rawLokasi);
     
     // Handling Izin / Sakit
     if (data.status === "IZIN" || data.status === "SAKIT") {
@@ -481,7 +493,7 @@ function processForm(data) {
       sheetData.getRange(userRowIndex, 6).setValue(jam);           // F (Jam Pulang)
       sheetData.getRange(userRowIndex, 7).setValue(totalJamStr);   // G (Total Jam)
       sheetData.getRange(userRowIndex, 9).setValue(statusPulang);  // I (Status Pulang)
-      sheetData.getRange(userRowIndex, 11).setValue(lokasiUrl);    // K (Lokasi Pulang)
+      sheetData.getRange(userRowIndex, 11).setValue(lokasiUrl || "-");    // K (Lokasi Pulang)
       sheetData.getRange(userRowIndex, 13).setValue(imageUrl);     // M (Foto Pulang)
       sheetData.getRange(userRowIndex, 15).setValue(keteranganPulang); // O (Keterangan Pulang)
       
@@ -647,7 +659,7 @@ function saveSettings(data) {
     });
   }
   
-  return { status: "success", message: "Pengaturan berhasil disimpan" };
+  return { status: "success", message: "Pengaturan berhasil disimpan", backendVersion: BACKEND_VERSION };
 }
 
 function getPegawai() {
