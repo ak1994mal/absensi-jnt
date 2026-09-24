@@ -35,10 +35,26 @@ export default function GasUrlModal({
     setTesting(true);
     const toastId = toast.loading("Menguji koneksi ke Google Apps Script...");
     try {
+      // 1. Cek info deployment (diagnosis versi backend)
+      let backendInfo = "";
+      try {
+        const infoRes = await fetch(`${trimmed}?action=getDeploymentInfo`, { cache: 'no-store' });
+        const infoData = await parseApiResponse(infoRes, 'getDeploymentInfo');
+        if (infoData && infoData.status === 'success' && infoData.backendVersion) {
+          backendInfo = ` (Backend ${infoData.backendVersion})`;
+        }
+      } catch (e) {}
+
+      // 2. Cek koneksi pegawai
       const res = await fetch(`${trimmed}?action=getPegawai`, { cache: 'no-store' });
       const data = await parseApiResponse(res, 'testConnection');
       if (data && data.status === 'success') {
-        toast.success(`Koneksi berhasil! Terhubung dengan ${data.data?.length || 0} pegawai terdaftar.`, { id: toastId });
+        const totalPegawai = data.data?.length || 0;
+        if (backendInfo) {
+          toast.success(`Koneksi berhasil! Terhubung dengan ${totalPegawai} pegawai${backendInfo}.`, { id: toastId });
+        } else {
+          toast.success(`Koneksi terhubung (${totalPegawai} pegawai). Info: Backend belum memiliki endpoint diagnosis getDeploymentInfo. Jika mengalami error jam, pastikan deploy New version di Apps Script.`, { id: toastId, duration: 6000 });
+        }
       } else {
         toast.warning(`Terkoneksi namun server mengembalikan: ${data?.message || 'Unknown status'}`, { id: toastId });
       }
@@ -188,16 +204,18 @@ export default function GasUrlModal({
                   <button
                     type="button"
                     onClick={() => setUrlInput(DEFAULT_GAS_URL)}
-                    className="px-2.5 py-1 text-[11px] text-neutral-500 hover:text-neutral-800 underline"
+                    className="px-2.5 py-1 text-[11px] text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded font-semibold border border-emerald-200 transition"
+                    title="URL Web App Aktif (Teruji Normalisasi Waktu)"
                   >
-                    Pakai URL V2
+                    Pakai URL Aktif (Verified)
                   </button>
                   <button
                     type="button"
                     onClick={() => setUrlInput(BACKUP_LEGACY_GAS_URL)}
                     className="px-2.5 py-1 text-[11px] text-neutral-500 hover:text-neutral-800 underline"
+                    title="URL Deployment Cadangan"
                   >
-                    Pakai URL V1
+                    URL Cadangan
                   </button>
                 </div>
               </div>

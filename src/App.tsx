@@ -603,16 +603,14 @@ export default function App() {
 
 
   const getSisaWaktuKerja = (jamDatangStr: any, targetJam: number) => {
-    if (!jamDatangStr || jamDatangStr === "-") return null;
+    const formatted = formatSheetTime(jamDatangStr);
+    if (!formatted || formatted === "-") return null;
     
-    // Pastikan selalu string sebelum di-split (fallback type safety)
-    const jamString = typeof jamDatangStr === "string" ? jamDatangStr : String(jamDatangStr);
+    const match = formatted.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
     
-    const parts = jamString.split(":");
-    if (parts.length !== 2) return null;
-    
-    const hDatang = parseInt(parts[0], 10);
-    const mDatang = parseInt(parts[1], 10);
+    const hDatang = parseInt(match[1], 10);
+    const mDatang = parseInt(match[2], 10);
     
     const now = new Date();
     const currentH = now.getHours();
@@ -649,8 +647,10 @@ export default function App() {
     const now = new Date();
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
 
-    const jamMasuk = posisiConfig?.jamMasuk || "08:00";
-    const [jm, mm] = jamMasuk.split(":").map(n => parseInt(n, 10) || 0);
+    const jamMasuk = formatSheetTime(posisiConfig?.jamMasuk) || "08:00";
+    const matchMasuk = jamMasuk.match(/^(\d{1,2}):(\d{2})$/);
+    const jm = matchMasuk ? parseInt(matchMasuk[1], 10) : 8;
+    const mm = matchMasuk ? parseInt(matchMasuk[2], 10) : 0;
     const jamMasukMenit = jm * 60 + mm;
     const toleransi = settingsData?.toleransiTelat ?? 30;
 
@@ -676,8 +676,10 @@ export default function App() {
     const now = new Date();
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
 
-    const jamPulang = posisiConfig?.jamPulang || "20:00";
-    const [jp, mp] = jamPulang.split(":").map(n => parseInt(n, 10) || 0);
+    const jamPulang = formatSheetTime(posisiConfig?.jamPulang) || "20:00";
+    const matchPulang = jamPulang.match(/^(\d{1,2}):(\d{2})$/);
+    const jp = matchPulang ? parseInt(matchPulang[1], 10) : 20;
+    const mp = matchPulang ? parseInt(matchPulang[2], 10) : 0;
     const jamPulangMenit = jp * 60 + mp;
 
     // Sama seperti backend: lembur (>=13 jam kerja) sudah ditangani terpisah di sana,

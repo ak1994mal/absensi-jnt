@@ -1,7 +1,10 @@
 // API Helper for Google Apps Script Integration
 
-export const DEFAULT_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
-export const BACKUP_LEGACY_GAS_URL = "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
+// Active production GAS Web App URL (Verified with robust time normalization)
+export const DEFAULT_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
+
+// Deprecated legacy deployment (kept for manual reference, never called automatically)
+export const BACKUP_LEGACY_GAS_URL = "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
 
 export const getStoredGasUrl = (): string => {
   try {

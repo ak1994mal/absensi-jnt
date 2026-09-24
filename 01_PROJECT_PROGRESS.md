@@ -9,7 +9,7 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.5.0` (Production Stable) |
+| **Versi Saat Ini** | `v2.5.1` (Production Stable) |
 | **Terakhir Diperbarui** | 24 September 2026 |
 | **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
@@ -112,6 +112,17 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.5.1] — 24 September 2026
+- **FIX (Diagnosis & Penyelesaian Live Bug TypeError: jamDatang.split):**
+  - Mengaudit dan membuktikan bahwa URL `DEFAULT_GAS_URL` sebelumnya mengarah ke deployment lama Google Apps Script yang belum ter-update dan mengembalikan `TypeError: jamDatang.split is not a function`.
+  - Mengarahkan `DEFAULT_GAS_URL` ke URL Web App deployment aktif terverifikasi (`AKfycbwVrPuN...`).
+  - Menghapus seluruh pemanggilan `.split(":")` pada waktu di `src/App.tsx` (`getSisaWaktuKerja`, `checkIfLate`, `checkIfEarlyLeave`) dan menggantinya dengan `formatSheetTime()` serta regex.
+  - Menambahkan endpoint diagnosis `getDeploymentInfo()` dan konstanta `BACKEND_VERSION = "2026-09-24-v2.5.1"` di `Kode.gs`.
+  - Menyertakan `backendVersion` pada setiap respons sukses dan error dari `processForm()` di Google Apps Script.
+  - Memperbarui `getRiwayat`, `getRingkasanHarian`, dan `getRiwayatBulan` dengan `getDisplayValues()` agar nilai waktu tidak terkonversi menjadi Date object / ISO datetime timezone offset.
+  - Menambahkan deteksi diagnosis versi backend otomatis pada dialog Tes Koneksi di `GasUrlModal`.
+  - Menyelaraskan seluruh file: `Kode.gs`, `src/kodeGsSource.ts`, dan `kode_dump.txt`.
 
 ### [v2.5.0] — 24 September 2026
 - **FIX (Bug #4 - Salah Anggap Pegawai Sudah Absen Pulang):**
