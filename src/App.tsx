@@ -79,11 +79,7 @@ const getSummaryByPosition = (rows: any[]) => {
 };
 
 
-export const OUTLETS = [
-  { name: "YZ_ MDP PASIR JAHA BALARAJA", lat: -6.205649180689262, lng: 106.45134398119775 },
-  { name: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727 }
-];
-
+// Catatan: Seluruh data master outlet bersumber langsung dari Google Spreadsheet sheet "DataOutlet".
 const EMPTY_ARRAY: any[] = [];
 
 
@@ -421,7 +417,7 @@ export default function App() {
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [laporanBulananOutlet, setLaporanBulananOutlet] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
-  const [ownerView, setOwnerView] = useState<'harian' | 'bulanan' | 'settings'>('harian');
+  const [ownerView, setOwnerView] = useState<'harian' | 'bulanan' | 'outlet' | 'settings'>('harian');
   const [laporanBulananSubView, setLaporanBulananSubView] = useState<'pegawai' | 'outlet'>('pegawai');
   const [targetJamKerja, setTargetJamKerja] = useState<number>(12);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
@@ -444,17 +440,17 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
-          return parsed;
+          return {
+            ...parsed,
+            outlets: Array.isArray(parsed.outlets) ? parsed.outlets : []
+          };
         }
       }
     } catch (e) {}
     return {
       requireLocation: true,
       positions: DEFAULT_POSITIONS,
-      outlets: [
-        { nama: "YZ_ MDP PASIR JAHA BALARAJA", lat: -6.205649180689262, lng: 106.45134398119775, radius: 150 },
-        { nama: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727, radius: 150 }
-      ]
+      outlets: []
     };
   });
   const [loadingSettings, setLoadingSettings] = useState(false);
@@ -610,7 +606,8 @@ export default function App() {
 
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
-        const activeOutlets = settingsData?.outlets?.length ? settingsData.outlets : OUTLETS;
+        const activeOutlets = settingsData?.outlets || [];
+        if (!activeOutlets.length) return;
 
         for (const out of activeOutlets) {
           const radius = out.radius || 150;
@@ -730,7 +727,7 @@ export default function App() {
 
   const matchOutletOption = (rawOutlet: string | undefined): string => {
     if (!rawOutlet) return "";
-    const list = (settingsData?.outlets && settingsData.outlets.length > 0) ? settingsData.outlets : OUTLETS;
+    const list = settingsData?.outlets || [];
     const norm = normalizeOutletName(rawOutlet);
     const found = list.find((o: any) => normalizeOutletName(o.nama || o.name) === norm);
     return found ? (found.nama || found.name) : rawOutlet;
@@ -1361,6 +1358,7 @@ export default function App() {
             enabled: p.enabled !== false && p.enabled !== 'FALSE' && p.enabled !== 'false'
           }));
         }
+        d.outlets = Array.isArray(d.outlets) ? d.outlets : [];
         setSettingsData(d);
         try {
           localStorage.setItem("settingsData_offline", JSON.stringify(d));
@@ -1373,23 +1371,8 @@ export default function App() {
         throw new Error(data.message || 'Unknown error fetching settings');
       }
     } catch (e: any) {
-      console.warn(`[fetchSettings] Mode offline / server terkendala:`, e?.message || e);
-      // Tetap gunakan pengaturan offline lengkap
-      let loaded = false;
-      try {
-        const saved = localStorage.getItem("settingsData_offline");
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed && typeof parsed === "object") {
-            setSettingsData(parsed);
-            loaded = true;
-          }
-        }
-      } catch (err) {}
-      if (!loaded) {
-        setSettingsData(DEFAULT_OFFLINE_SETTINGS);
-      }
-      setErrorSettings("");
+      console.warn(`[fetchSettings] Server terkendala:`, e?.message || e);
+      setErrorSettings("Data outlet belum tersedia atau gagal dimuat dari Google Spreadsheet. Silakan periksa koneksi dan sheet DataOutlet.");
     } finally {
       setLoadingSettings(false);
     }
@@ -1743,15 +1726,12 @@ export default function App() {
               outletLng = selectedOutlet.lng;
               maxRadius = selectedOutlet.radius || 150;
             }
-          } else {
-            const normOutlet = normalizeOutletName(effectiveOutlet);
-            if (normOutlet.includes("pasirjaha")) {
-              outletLat = -6.205649180689262;
-              outletLng = 106.45134398119775;
-            } else if (normOutlet.includes("jayanti")) {
-              outletLat = -6.206571510648256;
-              outletLng = 106.38621792361727;
-            }
+          }
+
+          if (settingsData?.requireLocation && (outletLat === 0 || outletLng === 0)) {
+            setLoadingSubmit(false);
+            setSubmitStatus("");
+            return toast.error(`Koordinat untuk outlet "${effectiveOutlet}" belum diatur di sheet DataOutlet. Silakan hubungi Admin/Owner.`);
           }
 
           if (outletLat !== 0 && outletLng !== 0) {
@@ -2044,7 +2024,7 @@ export default function App() {
                     className="w-full p-2.5 bg-neutral-50 border border-neutral-300 rounded-md focus:ring-2 focus:ring-[#cc0000] outline-none transition disabled:opacity-60 disabled:bg-neutral-100"
                   >
                     <option value="" disabled>Pilih Lokasi Outlet</option>
-                    {outlet && !(settingsData?.outlets && settingsData.outlets.some((o: any) => o.nama === outlet)) && !["YZ_ MDP PASIR JAHA BALARAJA", "YZ_ MDP JAYANTI CIKANDE"].includes(outlet) && (
+                    {outlet && !(settingsData?.outlets && settingsData.outlets.some((o: any) => o.nama === outlet)) && (
                       <option value={outlet}>{outlet}</option>
                     )}
                     {settingsData?.outlets && settingsData.outlets.length > 0 ? (
@@ -2052,12 +2032,23 @@ export default function App() {
                         <option key={o.nama} value={o.nama}>{o.nama}</option>
                       ))
                     ) : (
-                      <>
-                        <option value="YZ_ MDP PASIR JAHA BALARAJA">J&T Pasir Jaha Balaraja</option>
-                        <option value="YZ_ MDP JAYANTI CIKANDE">J&T Jayanti Cikande</option>
-                      </>
+                      <option value="" disabled>
+                        {loadingSettings ? "Memuat data outlet..." : "Data outlet belum tersedia. Silakan periksa sheet DataOutlet."}
+                      </option>
                     )}
                   </select>
+                  {(!settingsData?.outlets || settingsData.outlets.length === 0) && !loadingSettings && (
+                    <div className="flex items-center justify-between text-[11px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-200 mt-1.5">
+                      <span>Data outlet belum tersedia dari spreadsheet.</span>
+                      <button 
+                        type="button" 
+                        onClick={fetchSettings} 
+                        className="font-bold underline hover:text-amber-900 cursor-pointer"
+                      >
+                        Coba Lagi
+                      </button>
+                    </div>
+                  )}
                   {keterangan === 'PULANG' && (
                     <p className="text-[11px] text-neutral-500 mt-1">Otomatis diambil dari data absen DATANG aktif.</p>
                   )}
@@ -2391,6 +2382,12 @@ export default function App() {
                     className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'bulanan' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
                   >
                     Laporan Bulanan
+                  </button>
+                  <button 
+                    onClick={() => setOwnerView('outlet')}
+                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'outlet' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    Kelola Outlet
                   </button>
                   <button 
                     onClick={() => {
@@ -3067,6 +3064,23 @@ export default function App() {
               )}
 
 
+              {ownerView === 'outlet' && (
+                <motion.div
+                  key="owner-outlet"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <OutletMapManager 
+                    outlets={settingsData?.outlets || EMPTY_ARRAY}
+                    onSaveOutlets={handleUpdateOutlets}
+                    saving={savingSettings}
+                    onRefresh={fetchSettings}
+                  />
+                </motion.div>
+              )}
+
               {ownerView === 'settings' && (
                 <motion.div
                   key="owner-settings"
@@ -3413,6 +3427,7 @@ export default function App() {
                           outlets={settingsData.outlets || EMPTY_ARRAY}
                           onSaveOutlets={handleUpdateOutlets}
                           saving={savingSettings}
+                          onRefresh={fetchSettings}
                         />
                       </div>
                     </div>

@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-09-24-v2.5.2";
+const BACKEND_VERSION = "2026-09-25-v2.6.0-outlet";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -51,6 +51,8 @@ function doGet(e) {
       result = getLaporanBulanan(e.parameter.bulan);
     } else if (action === 'getRiwayatBulan') {
       result = getRiwayatBulan(e.parameter.nama, e.parameter.bulan);
+    } else if (action === 'getOutlets') {
+      result = { status: 'success', data: getOutlets(), backendVersion: BACKEND_VERSION };
     } else if (action === 'getSettings') {
       result = getSettings();
     } else if (action === 'saveSettings') {
@@ -567,28 +569,40 @@ function getSettings() {
     ];
   }
   
-  // Mengambil data outlet
+  // Mengambil data outlet langsung dari sheet DataOutlet
+  const outlets = getOutlets();
+
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
+}
+
+/**
+ * Membaca seluruh data master outlet langsung dari sheet "DataOutlet".
+ * Mengembalikan array objek outlet yang dinormalisasi: [{ nama, lat, lng, radius }, ...]
+ */
+function getOutlets() {
+  const ss = getSpreadsheet();
   let sheetOutlet = ss.getSheetByName("DataOutlet");
   if (!sheetOutlet) {
     sheetOutlet = ss.insertSheet("DataOutlet");
     sheetOutlet.getRange(1, 1, 1, 4).setValues([["Nama Outlet", "Latitude", "Longitude", "Toleransi Radius"]]);
+    return [];
   }
   
-  let outlets = [];
+  const outlets = [];
   const values = sheetOutlet.getDataRange().getValues();
-  // If the sheet is empty or only contains headers, values.length will be 1 or less
+  // Baris 1 adalah header: ["Nama Outlet", "Latitude", "Longitude", "Toleransi Radius"]
   for (let i = 1; i < values.length; i++) {
-    if (values[i][0]) {
+    const rawNama = values[i][0];
+    if (rawNama && String(rawNama).trim() !== "") {
       outlets.push({
-        nama: values[i][0],
+        nama: String(rawNama).trim(),
         lat: parseFloat(values[i][1]) || 0,
         lng: parseFloat(values[i][2]) || 0,
         radius: parseFloat(values[i][3]) || 150
       });
     }
   }
-
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
+  return outlets;
 }
 
 function saveSettings(data) {
@@ -636,7 +650,7 @@ function saveSettings(data) {
     sheet.getRange("B4").setValue(JSON.stringify(data.positions));
   }
   
-  // Update outlets if provided
+  // Update outlets langsung ke sheet DataOutlet
   if (data.outlets && Array.isArray(data.outlets)) {
     let sheetOutlet = ss.getSheetByName("DataOutlet");
     if (!sheetOutlet) {
@@ -651,12 +665,21 @@ function saveSettings(data) {
       sheetOutlet.getRange(2, 1, lastRow - 1, 4).clearContent();
     }
     
-    data.outlets.forEach((out, idx) => {
-      sheetOutlet.getRange(idx + 2, 1).setValue(out.nama || "");
-      sheetOutlet.getRange(idx + 2, 2).setValue(Number(out.lat) || 0);
-      sheetOutlet.getRange(idx + 2, 3).setValue(Number(out.lng) || 0);
-      sheetOutlet.getRange(idx + 2, 4).setValue(Number(out.radius) || 150);
+    const validOutlets = data.outlets.filter(function(out) {
+      return out && out.nama && String(out.nama).trim() !== "";
     });
+
+    if (validOutlets.length > 0) {
+      const rows = validOutlets.map(function(out) {
+        return [
+          String(out.nama).trim(),
+          Number(out.lat) || 0,
+          Number(out.lng) || 0,
+          Number(out.radius) || 150
+        ];
+      });
+      sheetOutlet.getRange(2, 1, rows.length, 4).setValues(rows);
+    }
   }
   
   return { status: "success", message: "Pengaturan berhasil disimpan", backendVersion: BACKEND_VERSION };

@@ -92,10 +92,7 @@ export const DEFAULT_OFFLINE_POSITIONS = [
   { name: "Drop Point", jamMasuk: "08:00", jamPulang: "20:00", enabled: true }
 ];
 
-export const DEFAULT_OFFLINE_OUTLETS = [
-  { nama: "YZ_ MDP PASIR JAHA BALARAJA", lat: -6.205649180689262, lng: 106.45134398119775, radius: 150 },
-  { nama: "YZ_ MDP JAYANTI CIKANDE", lat: -6.206571510648256, lng: 106.38621792361727, radius: 150 }
-];
+export const DEFAULT_OFFLINE_OUTLETS: Array<{ nama: string; lat: number; lng: number; radius: number }> = [];
 
 export const DEFAULT_OFFLINE_SETTINGS = {
   requireLocation: true,
