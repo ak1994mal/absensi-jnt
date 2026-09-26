@@ -1,38 +1,19 @@
 // API Helper for Google Apps Script Integration
 
-// Active production GAS Web App URL
-export const DEFAULT_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM/exec";
+// Dipakai HANYA untuk request pertama (getSettings) sebelum Settings sheet berhasil dibaca. Setelah itu, URL aktif mengikuti nilai gasUrl dari Settings sheet, disimpan di module-level variable, BUKAN konstanta ini.
+export const BOOTSTRAP_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
 
-// Invalid 404 URL blacklist to prevent using stale broken link from localStorage
-const INVALID_GAS_URLS = [
-  "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec"
-];
+// Module-level variable sebagai satu sumber kebenaran (single source of truth) URL GAS aktif
+let activeGasUrl: string = BOOTSTRAP_GAS_URL;
 
-export const getStoredGasUrl = (): string => {
-  try {
-    const saved = localStorage.getItem("custom_gas_url");
-    if (saved) {
-      const trimmed = saved.trim();
-      if (trimmed.startsWith("https://script.google.com/macros/s/") && !INVALID_GAS_URLS.includes(trimmed)) {
-        return trimmed;
-      } else {
-        localStorage.removeItem("custom_gas_url");
-      }
-    }
-  } catch (e) {}
-  return DEFAULT_GAS_URL;
+export const getActiveGasUrl = (): string => {
+  return activeGasUrl;
 };
 
-export const setStoredGasUrl = (url: string): void => {
-  try {
-    localStorage.setItem("custom_gas_url", url.trim());
-  } catch (e) {}
-};
-
-export const resetStoredGasUrl = (): void => {
-  try {
-    localStorage.removeItem("custom_gas_url");
-  } catch (e) {}
+export const setActiveGasUrl = (url: string): void => {
+  if (url && typeof url === "string") {
+    activeGasUrl = url.trim();
+  }
 };
 
 /**
@@ -99,7 +80,8 @@ export const DEFAULT_OFFLINE_SETTINGS = {
   enableWorkHours: true,
   positions: DEFAULT_OFFLINE_POSITIONS,
   outlets: DEFAULT_OFFLINE_OUTLETS,
-  favicon: ""
+  favicon: "",
+  gasUrl: ""
 };
 
 export const DEFAULT_OFFLINE_RINGKASAN = [

@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-09-25-v2.6.0-outlet";
+const BACKEND_VERSION = "2026-09-26-v2.7.0-gasurl";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -572,7 +572,17 @@ function getSettings() {
   // Mengambil data outlet langsung dari sheet DataOutlet
   const outlets = getOutlets();
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat() } };
+  // Mengambil gasUrl dari Settings!B9 (Row 9, Column 2)
+  const gasUrlVal = sheet.getRange("B9").getValue();
+  const gasUrl = gasUrlVal ? String(gasUrlVal).trim() : "";
+  try {
+    const labelA9 = sheet.getRange("A9").getValue();
+    if (!labelA9 || String(labelA9).trim() === "") {
+      sheet.getRange("A9").setValue("gas_url");
+    }
+  } catch (e) {}
+
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat(), gasUrl: gasUrl } };
 }
 
 /**
@@ -620,6 +630,22 @@ function saveSettings(data) {
   // Set enableWorkHours ke B8
   if (data.enableWorkHours !== undefined) {
     sheet.getRange("B8").setValue(data.enableWorkHours ? "TRUE" : "FALSE");
+  }
+
+  // Validasi dan simpan gasUrl ke Settings!B9 jika dikirim dan tidak kosong
+  if (data.gasUrl !== undefined && data.gasUrl !== null) {
+    const rawGasUrl = String(data.gasUrl).trim();
+    if (rawGasUrl !== "") {
+      const isValidGasUrl = rawGasUrl.startsWith("https://script.google.com/macros/s/") && rawGasUrl.endsWith("/exec");
+      if (!isValidGasUrl) {
+        return {
+          status: "error",
+          message: "Format URL Web App tidak valid. Harus diawali https://script.google.com/macros/s/ dan diakhiri /exec"
+        };
+      }
+      sheet.getRange("A9").setValue("gas_url");
+      sheet.getRange("B9").setValue(rawGasUrl);
+    }
   }
 
   // Update positions if provided
