@@ -1,7 +1,7 @@
 // API Helper for Google Apps Script Integration
 
 // Dipakai HANYA untuk request pertama (getSettings) sebelum Settings sheet berhasil dibaca. Setelah itu, URL aktif mengikuti nilai gasUrl dari Settings sheet, disimpan di module-level variable, BUKAN konstanta ini.
-export const BOOTSTRAP_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd/exec";
+export const BOOTSTRAP_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwiyyUb4fJ_9amA2GvMClr1KrI6ZECC9o4icsJzySSYVqa-Ulz798tlPquEO74tHhkk/exec";
 
 // Module-level variable sebagai satu sumber kebenaran (single source of truth) URL GAS aktif
 let activeGasUrl: string = BOOTSTRAP_GAS_URL;

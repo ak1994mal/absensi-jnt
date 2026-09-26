@@ -1146,9 +1146,17 @@ export default function App() {
       return await parseApiResponse(response, 'saveSettings');
     } catch (err: any) {
       console.warn("[saveSettings] POST error, trying GET fallback:", err?.message || err);
-      const url = `${targetUrl}?action=saveSettings&data=${encodeURIComponent(JSON.stringify(data))}`;
-      const response = await fetch(url, { cache: 'no-store' });
-      return await parseApiResponse(response, 'saveSettings');
+      try {
+        const url = `${targetUrl}?action=saveSettings&data=${encodeURIComponent(JSON.stringify(data))}`;
+        const response = await fetch(url, { cache: 'no-store' });
+        return await parseApiResponse(response, 'saveSettings');
+      } catch (getErr: any) {
+        console.warn("[saveSettings] GET fallback failed:", getErr?.message || getErr);
+        return {
+          status: 'error',
+          message: getErr?.message || 'Gagal terhubung ke Google Apps Script'
+        };
+      }
     }
   };
 
@@ -1192,7 +1200,13 @@ export default function App() {
       // c. Kalau berhasil, baru kirim saveSettings({ gasUrl: <url baru> }) ke URL YANG SEDANG AKTIF SEKARANG (bukan URL baru, karena baru itu belum tentu resmi tersimpan).
       toast.loading("Koneksi berhasil! Menyimpan ke sheet Settings...", { id: toastId });
       const currentActiveUrl = getActiveGasUrl();
-      const saveData = await sendSaveSettings({ gasUrl: trimmed }, currentActiveUrl);
+      let saveData = await sendSaveSettings({ gasUrl: trimmed }, currentActiveUrl);
+
+      // Jika URL aktif saat ini gagal disimpan (misalnya karena URL lama sudah tidak aktif/berbeda), coba simpan langsung ke URL baru yang sudah diverifikasi aktif
+      if ((!saveData || saveData.status !== 'success') && currentActiveUrl !== trimmed) {
+        console.warn("[handleSaveAndTestGasUrl] Simpan ke active URL gagal, mencoba simpan langsung ke URL baru...");
+        saveData = await sendSaveSettings({ gasUrl: trimmed }, trimmed);
+      }
 
       if (!saveData || saveData.status !== 'success') {
         toast.error(saveData?.message || "URL tidak bisa dihubungi, pengaturan TIDAK disimpan", { id: toastId });
@@ -1200,13 +1214,13 @@ export default function App() {
         return;
       }
 
-      // d. Setelah saveSettings sukses, panggil setActiveGasUrl(<url baru>), update state settingsData.gasUrl, tampilkan toast sukses "URL Web App berhasil diperbarui dan disimpan ke Settings".
+      // d. Setelah saveSettings sukses, panggil setActiveGasUrl(<url baru>), update state settingsData.gasUrl, tampilkan toast sukses
       setActiveGasUrl(trimmed);
       setGasUrl(trimmed);
       setSettingsData((prev: any) => prev ? { ...prev, gasUrl: trimmed } : prev);
-      toast.success("URL Web App berhasil diperbarui dan disimpan ke Settings.", { id: toastId });
+      toast.success("URL Google Apps Script berhasil diperbarui & diverifikasi.", { id: toastId });
     } catch (err: any) {
-      console.error("[handleSaveAndTestGasUrl] Error:", err);
+      console.warn("[handleSaveAndTestGasUrl] Error:", err?.message || err);
       toast.error("URL tidak bisa dihubungi, pengaturan TIDAK disimpan", { id: toastId });
     } finally {
       setTestingGasUrl(false);
