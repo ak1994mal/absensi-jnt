@@ -632,22 +632,6 @@ function saveSettings(data) {
     sheet.getRange("B8").setValue(data.enableWorkHours ? "TRUE" : "FALSE");
   }
 
-  // Validasi dan simpan gasUrl ke Settings!B9 jika dikirim dan tidak kosong
-  if (data.gasUrl !== undefined && data.gasUrl !== null) {
-    const rawGasUrl = String(data.gasUrl).trim();
-    if (rawGasUrl !== "") {
-      const isValidGasUrl = rawGasUrl.startsWith("https://script.google.com/macros/s/") && rawGasUrl.endsWith("/exec");
-      if (!isValidGasUrl) {
-        return {
-          status: "error",
-          message: "Format URL Web App tidak valid. Harus diawali https://script.google.com/macros/s/ dan diakhiri /exec"
-        };
-      }
-      sheet.getRange("A9").setValue("gas_url");
-      sheet.getRange("B9").setValue(rawGasUrl);
-    }
-  }
-
   // Update positions if provided
   if (data.positions && Array.isArray(data.positions)) {
     let sheetPosisi = ss.getSheetByName("DataPosisi");

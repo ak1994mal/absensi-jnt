@@ -5,7 +5,6 @@ import OutletMapManager from './components/OutletMapManager';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  BOOTSTRAP_GAS_URL, 
   getActiveGasUrl, 
   setActiveGasUrl, 
   parseApiResponse,
@@ -347,8 +346,6 @@ export default function App() {
 
   // Active Google Apps Script Web App URL state (Single Source of Truth)
   const [gasUrl, setGasUrl] = useState<string>(() => getActiveGasUrl());
-  const [gasUrlInput, setGasUrlInput] = useState<string>("");
-  const [testingGasUrl, setTestingGasUrl] = useState(false);
   const GAS_URL = gasUrl;
 
   // Keep activeTab persisted
@@ -429,12 +426,6 @@ export default function App() {
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [errorSettings, setErrorSettings] = useState("");
   const [faviconError, setFaviconError] = useState(false);
-
-  useEffect(() => {
-    if (settingsData && typeof settingsData.gasUrl === 'string') {
-      setGasUrlInput(settingsData.gasUrl);
-    }
-  }, [settingsData?.gasUrl]);
 
   const [newPosisiInput, setNewPosisiInput] = useState("");
   const [editingPosisiIndex, setEditingPosisiIndex] = useState<number | null>(null);
@@ -842,8 +833,10 @@ export default function App() {
   };
 
   // Bootstrap awal: panggil getSettings() pertama kali ke getActiveGasUrl() (BOOTSTRAP_GAS_URL).
-  // Begitu response datang, kalau result.data.gasUrl ada isinya DAN berbeda dari activeGasUrl saat ini,
-  // panggil setActiveGasUrl(result.data.gasUrl) SEBELUM melakukan fetch-fetch berikutnya (getPegawai, dst.).
+  // Begitu response datang, kalau response berisi gasUrl yang tidak kosong dan berbeda dari activeGasUrl saat ini:
+  // a. Tes koneksi dulu ke gasUrl tsb dengan ?action=getDeploymentInfo.
+  // b. Kalau sukses (status "success"), panggil setActiveGasUrl(gasUrl) — semua request berikutnya pakai URL ini.
+  // c. Kalau gagal, TETAP pakai BOOTSTRAP_GAS_URL untuk sesi ini, dan tampilkan satu toast peringatan singkat (sekali saja per sesi).
   useEffect(() => {
     let isMounted = true;
 
@@ -852,12 +845,36 @@ export default function App() {
       const settings = await fetchSettings(initialUrl);
 
       let effectiveUrl = initialUrl;
-      if (settings && settings.gasUrl && settings.gasUrl !== initialUrl) {
-        console.log(`[Bootstrap] Switch activeGasUrl dari Settings sheet: ${settings.gasUrl}`);
-        setActiveGasUrl(settings.gasUrl);
-        effectiveUrl = settings.gasUrl;
-        if (isMounted) {
-          setGasUrl(settings.gasUrl);
+      const sheetGasUrl = (settings?.gasUrl && typeof settings.gasUrl === 'string') ? settings.gasUrl.trim() : "";
+
+      if (sheetGasUrl && sheetGasUrl !== initialUrl) {
+        let isGasUrlValid = false;
+        try {
+          const testRes = await fetchWithRetry(`${sheetGasUrl}?action=getDeploymentInfo`, {}, 1);
+          const testData = await parseApiResponse(testRes, 'getDeploymentInfo');
+          if (testData && testData.status === 'success') {
+            isGasUrlValid = true;
+          }
+        } catch (testErr) {
+          isGasUrlValid = false;
+        }
+
+        if (isGasUrlValid) {
+          console.log(`[Bootstrap] Switch activeGasUrl dari Settings sheet: ${sheetGasUrl}`);
+          setActiveGasUrl(sheetGasUrl);
+          effectiveUrl = sheetGasUrl;
+          if (isMounted) {
+            setGasUrl(sheetGasUrl);
+          }
+        } else {
+          console.warn(`[Bootstrap] URL dari sheet (${sheetGasUrl}) gagal diuji, tetap menggunakan fallback URL`);
+          if (!sessionStorage.getItem("gas_url_warned")) {
+            sessionStorage.setItem("gas_url_warned", "true");
+            toast.error(
+              "URL Google Apps Script di spreadsheet (Settings!B9) tidak valid/tidak bisa dihubungi, menggunakan URL cadangan bawaan aplikasi.",
+              { duration: 6000 }
+            );
+          }
         }
       }
 
@@ -1157,73 +1174,6 @@ export default function App() {
           message: getErr?.message || 'Gagal terhubung ke Google Apps Script'
         };
       }
-    }
-  };
-
-  const handleSaveAndTestGasUrl = async () => {
-    const trimmed = (gasUrlInput || "").trim();
-    if (!trimmed) {
-      toast.error("URL Google Apps Script tidak boleh kosong.");
-      return;
-    }
-
-    // a. Validasi format URL di sisi frontend dulu (pola sama seperti di backend)
-    const isValidFormat = trimmed.startsWith("https://script.google.com/macros/s/") && trimmed.endsWith("/exec");
-    if (!isValidFormat) {
-      toast.error("Format URL Web App tidak valid. Harus diawali https://script.google.com/macros/s/ dan diakhiri /exec");
-      return;
-    }
-
-    setTestingGasUrl(true);
-    const toastId = toast.loading("Menguji koneksi ke URL Google Apps Script...");
-
-    try {
-      // b. Fetch langsung ke URL BARU tersebut dengan ?action=getDeploymentInfo.
-      // Kalau gagal (network error, response bukan JSON, atau status bukan "success"), tampilkan toast error "URL tidak bisa dihubungi, pengaturan TIDAK disimpan" dan hentikan — jangan lanjut ke langkah c.
-      let testOk = false;
-      try {
-        const testRes = await fetchWithRetry(`${trimmed}?action=getDeploymentInfo`, {}, 1);
-        const testData = await parseApiResponse(testRes, 'getDeploymentInfo');
-        if (testData && testData.status === 'success') {
-          testOk = true;
-        }
-      } catch (testErr) {
-        testOk = false;
-      }
-
-      if (!testOk) {
-        toast.error("URL tidak bisa dihubungi, pengaturan TIDAK disimpan", { id: toastId });
-        setTestingGasUrl(false);
-        return;
-      }
-
-      // c. Kalau berhasil, baru kirim saveSettings({ gasUrl: <url baru> }) ke URL YANG SEDANG AKTIF SEKARANG (bukan URL baru, karena baru itu belum tentu resmi tersimpan).
-      toast.loading("Koneksi berhasil! Menyimpan ke sheet Settings...", { id: toastId });
-      const currentActiveUrl = getActiveGasUrl();
-      let saveData = await sendSaveSettings({ gasUrl: trimmed }, currentActiveUrl);
-
-      // Jika URL aktif saat ini gagal disimpan (misalnya karena URL lama sudah tidak aktif/berbeda), coba simpan langsung ke URL baru yang sudah diverifikasi aktif
-      if ((!saveData || saveData.status !== 'success') && currentActiveUrl !== trimmed) {
-        console.warn("[handleSaveAndTestGasUrl] Simpan ke active URL gagal, mencoba simpan langsung ke URL baru...");
-        saveData = await sendSaveSettings({ gasUrl: trimmed }, trimmed);
-      }
-
-      if (!saveData || saveData.status !== 'success') {
-        toast.error(saveData?.message || "URL tidak bisa dihubungi, pengaturan TIDAK disimpan", { id: toastId });
-        setTestingGasUrl(false);
-        return;
-      }
-
-      // d. Setelah saveSettings sukses, panggil setActiveGasUrl(<url baru>), update state settingsData.gasUrl, tampilkan toast sukses
-      setActiveGasUrl(trimmed);
-      setGasUrl(trimmed);
-      setSettingsData((prev: any) => prev ? { ...prev, gasUrl: trimmed } : prev);
-      toast.success("URL Google Apps Script berhasil diperbarui & diverifikasi.", { id: toastId });
-    } catch (err: any) {
-      console.warn("[handleSaveAndTestGasUrl] Error:", err?.message || err);
-      toast.error("URL tidak bisa dihubungi, pengaturan TIDAK disimpan", { id: toastId });
-    } finally {
-      setTestingGasUrl(false);
     }
   };
 
@@ -3294,76 +3244,8 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Right Panel: Position Manager, Outlet Map & GAS URL */}
+                      {/* Right Panel: Position Manager & Outlet Map */}
                       <div className="flex-1 w-full min-w-0 flex flex-col gap-6">
-                        {/* URL Google Apps Script Web App (Single Source of Truth) */}
-                        <div className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-neutral-100">
-                            <div className="flex items-center gap-2.5">
-                              <div className="p-2 bg-red-50 text-[#cc0000] rounded-lg border border-red-100">
-                                <Globe className="w-5 h-5" />
-                              </div>
-                              <div>
-                                <h3 className="font-bold text-neutral-800 text-base">URL Google Apps Script</h3>
-                                <p className="text-xs text-neutral-500">Satu sumber kebenaran (single source of truth) endpoint Web App yang tersimpan di sheet Settings.</p>
-                              </div>
-                            </div>
-                            <span className="self-start sm:self-auto text-xs font-mono px-2.5 py-1 bg-neutral-100 text-neutral-600 rounded-full border border-neutral-200">
-                              Settings!B9
-                            </span>
-                          </div>
-
-                          <div className="flex flex-col gap-3">
-                            <div>
-                              <label className="block text-xs font-bold text-neutral-700 mb-1.5">
-                                URL Google Apps Script
-                              </label>
-                              <input
-                                type="text"
-                                value={gasUrlInput}
-                                onChange={(e) => setGasUrlInput(e.target.value)}
-                                placeholder={BOOTSTRAP_GAS_URL}
-                                className="w-full text-xs font-mono p-2.5 bg-neutral-50 border border-neutral-300 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#cc0000] focus:border-transparent transition"
-                              />
-                              <p className="text-[11px] text-neutral-400 mt-1">
-                                Format wajib: diawali <code className="text-neutral-600 font-semibold">https://script.google.com/macros/s/</code> dan diakhiri <code className="text-neutral-600 font-semibold">/exec</code>.
-                              </p>
-                            </div>
-
-                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2">
-                              <div className="text-[11px] text-neutral-500">
-                                {settingsData.gasUrl ? (
-                                  <span className="text-emerald-700 flex items-center gap-1 font-medium">
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline shrink-0" /> URL tersimpan di sheet Settings (B9)
-                                  </span>
-                                ) : (
-                                  <span className="text-amber-700 flex items-center gap-1 font-medium">
-                                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 inline shrink-0" /> Belum ada URL di sheet Settings (menggunakan bootstrap URL)
-                                  </span>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleSaveAndTestGasUrl}
-                                disabled={testingGasUrl || savingSettings}
-                                className="w-full sm:w-auto px-4 py-2 bg-[#cc0000] hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition shadow-sm flex items-center justify-center gap-2 cursor-pointer"
-                              >
-                                {testingGasUrl ? (
-                                  <>
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    Menguji & Menyimpan...
-                                  </>
-                                ) : (
-                                  <>
-                                    <Check className="w-3.5 h-3.5" />
-                                    Simpan & Uji Koneksi
-                                  </>
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
                         {/* Kelola Posisi Pegawai */}
                         <div className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-neutral-100">
