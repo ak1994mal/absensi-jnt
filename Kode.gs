@@ -98,8 +98,12 @@ function doPost(e) {
   }
 }
 
+let _cachedSpreadsheet = null;
 function getSpreadsheet() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+  if (!_cachedSpreadsheet) {
+    _cachedSpreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  }
+  return _cachedSpreadsheet;
 }
 
 // Baca toleransi telat (menit) dari sheet Settings!B7. Default 30 kalau kosong/tidak valid.
