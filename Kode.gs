@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-09-26-v2.7.0-gasurl";
+const BACKEND_VERSION = "2026-09-30-v2.7.1-fixdate";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -46,7 +46,7 @@ function doGet(e) {
     } else if (action === 'getRiwayat') {
       result = getRiwayat(e.parameter.nama);
     } else if (action === 'getRingkasanHarian') {
-      result = getRingkasanHarian();
+      result = getRingkasanHarian(e.parameter.tanggal);
     } else if (action === 'getLaporanBulanan') {
       result = getLaporanBulanan(e.parameter.bulan);
     } else if (action === 'getRiwayatBulan') {
@@ -523,22 +523,33 @@ function getSettings() {
     return { status: "error", message: "Sheet Settings tidak ditemukan" };
   }
   
-  // Mengambil favicon dari B2 (Row 2, Column 2)
-  const faviconUrl = sheet.getRange("B2").getValue();
+  // Baca seluruh sel B1:B10 dalam SATU operasi getValues agar cepat (menghemat network roundtrips)
+  const settingsValues = sheet.getRange(1, 1, 10, 2).getValues();
   
-  // Mengambil requireLocation dari B3 (Row 3, Column 2)
-  let requireLocation = true; // default true
-  const requireLocationVal = sheet.getRange("B3").getValue();
+  // Favicon dari B2 (baris 2, kolom 2 -> index [1][1])
+  const faviconUrl = settingsValues[1] ? settingsValues[1][1] : "";
+  
+  // requireLocation dari B3 (baris 3, kolom 2 -> index [2][1])
+  let requireLocation = true;
+  const requireLocationVal = settingsValues[2] ? settingsValues[2][1] : "";
   if (requireLocationVal !== "") {
     requireLocation = requireLocationVal === true || requireLocationVal === "TRUE" || requireLocationVal === "true";
   }
 
-  // Mengambil enableWorkHours dari B8 (Row 8, Column 2)
-  let enableWorkHours = true; // default true
-  const enableWorkHoursVal = sheet.getRange("B8").getValue();
+  // toleransiTelat dari B7 (baris 7, kolom 2 -> index [6][1])
+  const toleransiVal = settingsValues[6] ? parseInt(settingsValues[6][1], 10) : 30;
+  const toleransiTelat = isNaN(toleransiVal) ? 30 : toleransiVal;
+
+  // enableWorkHours dari B8 (baris 8, kolom 2 -> index [7][1])
+  let enableWorkHours = true;
+  const enableWorkHoursVal = settingsValues[7] ? settingsValues[7][1] : "";
   if (enableWorkHoursVal !== "") {
     enableWorkHours = enableWorkHoursVal === true || enableWorkHoursVal === "TRUE" || enableWorkHoursVal === "true";
   }
+
+  // gasUrl dari B9 (baris 9, kolom 2 -> index [8][1])
+  const gasUrlVal = settingsValues[8] ? settingsValues[8][1] : "";
+  const gasUrl = gasUrlVal ? String(gasUrlVal).trim() : "";
 
   // Mengambil data posisi
   let positions = [];
@@ -560,10 +571,6 @@ function getSettings() {
       }
     }
   }
-  // Catatan: fallback lama yang membaca Settings!B4 sebagai daftar posisi sudah dihapus.
-  // Sel itu sekarang dipakai untuk "working_days" (bukan daftar posisi), jadi kalau
-  // dibaca sebagai posisi akan menghasilkan data sampah. Kalau sheet DataPosisi tidak
-  // ada/kosong, langsung pakai default di bawah ini.
   if (!positions || positions.length === 0) {
     positions = [
       { name: "Admin", jamMasuk: "08:00", jamPulang: "20:00", enabled: true },
@@ -576,17 +583,7 @@ function getSettings() {
   // Mengambil data outlet langsung dari sheet DataOutlet
   const outlets = getOutlets();
 
-  // Mengambil gasUrl dari Settings!B9 (Row 9, Column 2)
-  const gasUrlVal = sheet.getRange("B9").getValue();
-  const gasUrl = gasUrlVal ? String(gasUrlVal).trim() : "";
-  try {
-    const labelA9 = sheet.getRange("A9").getValue();
-    if (!labelA9 || String(labelA9).trim() === "") {
-      sheet.getRange("A9").setValue("gas_url");
-    }
-  } catch (e) {}
-
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: getToleransiTelat(), gasUrl: gasUrl } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: toleransiTelat, gasUrl: gasUrl } };
 }
 
 /**
@@ -761,23 +758,37 @@ function getRiwayat(nama) {
   return { status: "success", data: riwayat, backendVersion: BACKEND_VERSION };
 }
 
-function getRingkasanHarian() {
+function getRingkasanHarian(paramTanggal) {
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName("Data_Absensi");
+  if (!sheet) {
+    return { status: "success", data: [], backendVersion: BACKEND_VERSION };
+  }
   const values = sheet.getDataRange().getValues();
   const displayValues = sheet.getDataRange().getDisplayValues();
   
-  const dateObj = new Date();
-  const day = ("0" + dateObj.getDate()).slice(-2);
-  const month = ("0" + (dateObj.getMonth() + 1)).slice(-2);
-  const year = dateObj.getFullYear();
-  const filterTanggal = day + "/" + month + "/" + year;
+  // Tentukan targetDate:
+  // 1. Parameter tanggal dari request (jika ada)
+  // 2. Default tanggal hari ini dalam timezone Asia/Jakarta (WIB)
+  let targetDate = "";
+  if (paramTanggal && String(paramTanggal).trim() !== "") {
+    targetDate = normalizeDateStr(String(paramTanggal).trim());
+  } else {
+    try {
+      targetDate = normalizeDateStr(Utilities.formatDate(new Date(), "Asia/Jakarta", "dd/MM/yyyy"));
+    } catch (e) {
+      const d = new Date();
+      targetDate = normalizeDateStr(("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + d.getFullYear());
+    }
+  }
   
-  const ringkasan = [];
+  let ringkasan = [];
   
   for (let i = 1; i < values.length; i++) {
-    const rowTanggal = parseSheetDate(values[i][0]);
-    if (rowTanggal === filterTanggal) {
+    const rawVal = displayValues[i] && displayValues[i][0] ? displayValues[i][0] : values[i][0];
+    const rowDate = normalizeDateStr(parseSheetDate(rawVal));
+
+    if (rowDate === targetDate) {
       const jamDatangParsed = (displayValues[i] && displayValues[i][4] && displayValues[i][4] !== "-") 
         ? parseSheetTime(displayValues[i][4]) 
         : parseSheetTime(values[i][4]);
@@ -786,7 +797,7 @@ function getRingkasanHarian() {
         : parseSheetTime(values[i][5]);
 
       ringkasan.push({
-        tanggal: rowTanggal,
+        tanggal: rowDate,
         nama: values[i][1],
         posisi: values[i][2],
         outlet: values[i][3],
@@ -803,7 +814,8 @@ function getRingkasanHarian() {
       });
     }
   }
-  return { status: "success", data: ringkasan, backendVersion: BACKEND_VERSION };
+
+  return { status: "success", data: ringkasan, tanggal: targetDate, backendVersion: BACKEND_VERSION };
 }
 
 function getLaporanBulanan(bulan) {
@@ -1085,4 +1097,17 @@ function parseSheetDate(val) {
 
   // Handle standard "DD/MM/YYYY" or other string format
   return str;
+}
+
+function normalizeDateStr(str) {
+  if (!str) return "";
+  const cleaned = String(str).trim().replace(/-/g, '/');
+  const parts = cleaned.split('/');
+  if (parts.length === 3) {
+    const d = ("0" + parts[0]).slice(-2);
+    const m = ("0" + parts[1]).slice(-2);
+    const y = parts[2].length === 2 ? ("20" + parts[2]) : parts[2];
+    return d + "/" + m + "/" + y;
+  }
+  return cleaned;
 }

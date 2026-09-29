@@ -186,9 +186,18 @@ export const getDirectDriveUrl = (url: string | null | undefined): string => {
   return str;
 };
 
-export const getTodayString = (): string => {
-  const d = new Date();
-  return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+export const getTodayString = (dateObj: Date = new Date()): string => {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(dateObj); // "DD/MM/YYYY" e.g. "30/09/2026"
+  } catch (e) {
+    const d = new Date(dateObj.getTime() + (7 * 3600000 + dateObj.getTimezoneOffset() * 60000));
+    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+  }
 };
 
 export const normalizeDateStr = (str: string): string => {
@@ -354,8 +363,30 @@ export default function App() {
   }, [activeTab]);
 
 
-  const [daftarPegawai, setDaftarPegawai] = useState<string[]>([]);
-  const [loadingNames, setLoadingNames] = useState(true);
+  const [daftarPegawai, setDaftarPegawai] = useState<string[]>(() => {
+    try {
+      const cached = localStorage.getItem("cached_pegawai");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return DEFAULT_OFFLINE_PEGAWAI;
+  });
+  const [loadingNames, setLoadingNames] = useState<boolean>(() => {
+    try {
+      const cached = localStorage.getItem("cached_pegawai");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return false;
+        }
+      }
+    } catch (e) {}
+    return false;
+  });
   
   const [nama, setNama] = useState("");
   const [posisi, setPosisi] = useState<PosisiPegawai>("");
@@ -842,6 +873,11 @@ export default function App() {
 
     const bootstrapApp = async () => {
       const initialUrl = getActiveGasUrl();
+      // Panggil fetchPegawai paralel segera sejak awal tanpa menunggu getSettings & test koneksi
+      if (isMounted) {
+        fetchPegawai(initialUrl);
+      }
+
       const settings = await fetchSettings(initialUrl);
 
       let effectiveUrl = initialUrl;
@@ -865,6 +901,8 @@ export default function App() {
           effectiveUrl = sheetGasUrl;
           if (isMounted) {
             setGasUrl(sheetGasUrl);
+            // Refresh data pegawai dari URL baru jika URL berubah
+            fetchPegawai(sheetGasUrl);
           }
         } else {
           console.warn(`[Bootstrap] URL dari sheet (${sheetGasUrl}) gagal diuji, tetap menggunakan fallback URL`);
@@ -876,11 +914,6 @@ export default function App() {
             );
           }
         }
-      }
-
-      // SEBELUM melakukan fetch-fetch berikutnya (getPegawai, dst.)
-      if (isMounted) {
-        fetchPegawai(effectiveUrl);
       }
     };
 
@@ -947,48 +980,19 @@ export default function App() {
   const fetchRingkasanHarian = async () => {
     setLoadingRingkasan(true);
     setErrorRingkasan("");
+    const todayStr = getTodayString();
+
     if (!GAS_URL) {
       setTimeout(() => {
-        setRingkasanHarian([
-          { 
-            nama: "Mohammad Danang", 
-            posisi: "Admin",
-            outlet: "YZ_ MDP PASIR JAHA BALARAJA", 
-            jamDatang: "07:55", 
-            statusMasuk: "TEPAT WAKTU",
-            jamPulang: "20:05",
-            totalJam: "12j 10m",
-            statusPulang: "NORMAL",
-            fotoDatang: "https://placehold.co/100x100?text=Masuk",
-            fotoPulang: "https://placehold.co/100x100?text=Pulang",
-            lokasiDatang: "https://maps.google.com/?q=-6.2056,106.4513",
-            lokasiPulang: "https://maps.google.com/?q=-6.2056,106.4513"
-          },
-          { 
-            nama: "Fitri Fajria", 
-            posisi: "Pickup",
-            outlet: "YZ_ MDP JAYANTI CIKANDE", 
-            jamDatang: "08:40", 
-            statusMasuk: "TELAT",
-            alasan: "Ban bocor di jalan tol",
-            jamPulang: "-",
-            totalJam: "-",
-            statusPulang: "-",
-            fotoDatang: "https://placehold.co/100x100?text=Masuk",
-            fotoPulang: "",
-            lokasiDatang: "https://maps.google.com/?q=-6.2065,106.3862",
-            lokasiPulang: ""
-          },
-        ]);
+        setRingkasanHarian([]);
         setLoadingRingkasan(false);
-      }, 800);
+      }, 500);
       return;
     }
 
-
     try {
-      console.log(`[fetchRingkasanHarian] Memuat ringkasan hari ini...`);
-      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian`);
+      console.log(`[fetchRingkasanHarian] Memuat ringkasan hari ini (${todayStr})...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian&tanggal=${encodeURIComponent(todayStr)}`);
       const data = await parseApiResponse(res, 'getRingkasanHarian');
       
       if (data.status === 'success') {
@@ -1001,7 +1005,10 @@ export default function App() {
         }));
         setRingkasanHarian(formattedData);
         try {
-          localStorage.setItem("cached_ringkasan_harian", JSON.stringify(formattedData));
+          localStorage.setItem("cached_ringkasan_harian", JSON.stringify({
+            date: todayStr,
+            data: formattedData
+          }));
         } catch (e) {}
         setErrorRingkasan("");
       } else {
@@ -1009,20 +1016,26 @@ export default function App() {
       }
     } catch (e: any) {
       console.warn(`[fetchRingkasanHarian] Mode offline / fallback:`, e?.message || e);
-      // Coba load offline cache
+      // Validasi cache: hanya pakai cache jika tanggalnya sesuai hari ini
       let loaded = false;
       try {
         const cached = localStorage.getItem("cached_ringkasan_harian");
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setRingkasanHarian(parsed);
+          if (parsed && parsed.date === todayStr && Array.isArray(parsed.data)) {
+            setRingkasanHarian(parsed.data);
             loaded = true;
+          } else if (Array.isArray(parsed) && parsed.length > 0) {
+            const todayRecords = parsed.filter((r: any) => normalizeDateStr(r.tanggal) === normalizeDateStr(todayStr));
+            if (todayRecords.length > 0) {
+              setRingkasanHarian(todayRecords);
+              loaded = true;
+            }
           }
         }
       } catch (err) {}
       if (!loaded) {
-        setRingkasanHarian(DEFAULT_OFFLINE_RINGKASAN);
+        setRingkasanHarian([]);
       }
       setErrorRingkasan("");
     } finally {
@@ -2449,7 +2462,12 @@ export default function App() {
                     transition={{ duration: 0.2 }}
                   >
                     <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
-                    <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Hari Ini</h2>
+                    <div className="flex items-center gap-2.5">
+                      <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Hari Ini</h2>
+                      <span className="text-xs font-bold px-2.5 py-1 bg-red-50 text-[#cc0000] border border-red-200 rounded-full">
+                        {todayStr}
+                      </span>
+                    </div>
                     <div className="flex flex-wrap items-center gap-3">
                       <button 
                         onClick={fetchRingkasanHarian} 
@@ -2533,7 +2551,7 @@ export default function App() {
                   </div>
                 </div>
               ) : ringkasanHarian.length === 0 ? (
-                <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada absensi hari ini.</div>
+                <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada absensi hari ini ({todayStr}).</div>
               ) : (
                 <>
                 {/* Desktop Table View */}
