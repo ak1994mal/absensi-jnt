@@ -78,6 +78,7 @@ export const DEFAULT_OFFLINE_OUTLETS: Array<{ nama: string; lat: number; lng: nu
 export const DEFAULT_OFFLINE_SETTINGS = {
   requireLocation: true,
   enableWorkHours: true,
+  toleransiTelat: 30,
   positions: DEFAULT_OFFLINE_POSITIONS,
   outlets: DEFAULT_OFFLINE_OUTLETS,
   favicon: "",

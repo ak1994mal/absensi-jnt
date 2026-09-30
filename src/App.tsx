@@ -461,6 +461,17 @@ export default function App() {
   const [newPosisiInput, setNewPosisiInput] = useState("");
   const [editingPosisiIndex, setEditingPosisiIndex] = useState<number | null>(null);
   const [editingPosisiValue, setEditingPosisiValue] = useState("");
+  const [toleransiTelatInput, setToleransiTelatInput] = useState<string>(() => {
+    return String(settingsData?.toleransiTelat ?? settingsData?.toleransi_telat ?? 30);
+  });
+
+  useEffect(() => {
+    if (settingsData?.toleransiTelat !== undefined) {
+      setToleransiTelatInput(String(settingsData.toleransiTelat));
+    } else if (settingsData?.toleransi_telat !== undefined) {
+      setToleransiTelatInput(String(settingsData.toleransi_telat));
+    }
+  }, [settingsData?.toleransiTelat, settingsData?.toleransi_telat]);
 
   const availablePositions: PositionConfig[] = (settingsData?.positions && Array.isArray(settingsData.positions) && settingsData.positions.length > 0)
     ? settingsData.positions.map((p: any) => {
@@ -794,6 +805,10 @@ export default function App() {
         }
         d.outlets = Array.isArray(d.outlets) ? d.outlets : [];
         d.gasUrl = (d.gasUrl && typeof d.gasUrl === 'string') ? d.gasUrl.trim() : "";
+        const rawTol = d.toleransiTelat !== undefined ? d.toleransiTelat : d.toleransi_telat;
+        const parsedTol = parseInt(rawTol, 10);
+        d.toleransiTelat = isNaN(parsedTol) ? 30 : parsedTol;
+        d.toleransi_telat = d.toleransiTelat;
         setSettingsData(d);
         try {
           localStorage.setItem("settingsData_offline", JSON.stringify(d));
@@ -1220,6 +1235,8 @@ export default function App() {
       const result = await sendSaveSettings({ 
         requireLocation: newStatus,
         enableWorkHours: workHoursActive,
+        toleransiTelat: settingsData?.toleransiTelat ?? 30,
+        toleransi_telat: settingsData?.toleransiTelat ?? 30,
         outlets: settingsData?.outlets || [],
         positions: availablePositions
       });
@@ -1264,6 +1281,8 @@ export default function App() {
       const result = await sendSaveSettings({ 
         requireLocation: isCurrentlyReq,
         enableWorkHours: newStatus,
+        toleransiTelat: settingsData?.toleransiTelat ?? 30,
+        toleransi_telat: settingsData?.toleransiTelat ?? 30,
         outlets: settingsData?.outlets || [],
         positions: availablePositions
       });
@@ -1309,6 +1328,8 @@ export default function App() {
       const result = await sendSaveSettings({ 
         requireLocation: isCurrentlyReq,
         enableWorkHours: workHoursActive,
+        toleransiTelat: settingsData?.toleransiTelat ?? 30,
+        toleransi_telat: settingsData?.toleransiTelat ?? 30,
         outlets: updatedOutlets,
         positions: availablePositions
       });
@@ -1353,6 +1374,8 @@ export default function App() {
       const result = await sendSaveSettings({ 
         requireLocation: isCurrentlyReq,
         enableWorkHours: workHoursActive,
+        toleransiTelat: settingsData?.toleransiTelat ?? 30,
+        toleransi_telat: settingsData?.toleransiTelat ?? 30,
         outlets: settingsData?.outlets || [],
         positions: updatedPositions
       });
@@ -1363,6 +1386,59 @@ export default function App() {
       }
     } catch (e: any) {
         toast.error(`Error menyimpan posisi: ${e.message}`, { id: loadingToastId });
+    } finally {
+        setSavingSettings(false);
+    }
+  };
+
+  const handleSaveToleransiTelat = async () => {
+    const val = parseInt(toleransiTelatInput, 10);
+    if (isNaN(val) || val < 0) {
+      toast.error("Toleransi keterlambatan harus berupa angka positif (menit).");
+      return;
+    }
+
+    const rawReq = settingsData?.requireLocation;
+    const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+
+    const updatedSettings = {
+      ...settingsData,
+      toleransiTelat: val,
+      toleransi_telat: val,
+      requireLocation: isCurrentlyReq,
+      enableWorkHours: workHoursActive
+    };
+    setSettingsData(updatedSettings);
+    try {
+      localStorage.setItem("settingsData_offline", JSON.stringify(updatedSettings));
+    } catch (e) {}
+
+    if (!GAS_URL) {
+      toast.success(`Toleransi keterlambatan diset ${val} menit (Mode Preview).`);
+      return;
+    }
+
+    setSavingSettings(true);
+    const loadingToastId = toast.loading("Menyimpan toleransi telat ke spreadsheet...");
+    try {
+      const result = await sendSaveSettings({ 
+        toleransiTelat: val,
+        toleransi_telat: val,
+        requireLocation: isCurrentlyReq,
+        enableWorkHours: workHoursActive,
+        outlets: settingsData?.outlets || [],
+        positions: availablePositions
+      });
+      if (result.status === "success") {
+        toast.success(`Toleransi keterlambatan (${val} menit) berhasil disimpan ke spreadsheet (Settings!A7:B7).`, { id: loadingToastId });
+      } else {
+        toast.error(`Gagal menyimpan: ${result.message}`, { id: loadingToastId });
+      }
+    } catch (e: any) {
+        toast.error(`Error menyimpan toleransi: ${e.message}`, { id: loadingToastId });
     } finally {
         setSavingSettings(false);
     }
@@ -3260,6 +3336,19 @@ export default function App() {
                             />
                           </button>
                         </div>
+                        <div className="w-full h-px bg-neutral-100"></div>
+
+                        <div className="w-full flex items-center justify-between gap-2 py-1">
+                          <div className="flex-1">
+                            <p className="font-bold text-neutral-800 text-sm">Toleransi Telat</p>
+                            <p className="text-[10px] text-neutral-400 leading-tight">
+                              Batas telat masuk (Settings!B7)
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold px-2 py-1 bg-amber-50 border border-amber-200 text-amber-900 rounded-md">
+                            {settingsData?.toleransiTelat ?? 30} menit
+                          </span>
+                        </div>
                       </div>
 
                       {/* Right Panel: Position Manager & Outlet Map */}
@@ -3317,6 +3406,49 @@ export default function App() {
                                 }`}
                               />
                             </button>
+                          </div>
+
+                          {/* Toleransi Keterlambatan (toleransi_telat) */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-3.5 mb-5 rounded-xl bg-amber-50/70 border border-amber-200 shadow-sm">
+                            <div className="flex items-start gap-3">
+                              <div className="p-2 rounded-lg bg-amber-100 text-amber-800 border border-amber-200 shrink-0">
+                                <Clock className="w-5 h-5 text-amber-700" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-neutral-800 text-sm">Toleransi Keterlambatan</span>
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                                    Settings!A7:B7
+                                  </span>
+                                </div>
+                                <p className="text-xs text-neutral-600 mt-0.5">
+                                  Batas toleransi telat (menit) setelah jam masuk jadwal posisi sebelum sistem menolak absen datang.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                              <div className="flex items-center bg-white border border-neutral-300 rounded-lg p-1.5 px-3 focus-within:ring-2 focus-within:ring-[#cc0000] focus-within:border-transparent transition shadow-sm">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="360"
+                                  value={toleransiTelatInput}
+                                  onChange={(e) => setToleransiTelatInput(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveToleransiTelat(); }}
+                                  className="w-16 font-extrabold text-center text-sm outline-none text-neutral-800"
+                                  placeholder="30"
+                                />
+                                <span className="text-xs font-bold text-neutral-500 ml-1">menit</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleSaveToleransiTelat}
+                                disabled={savingSettings}
+                                className="px-4 py-2 bg-[#cc0000] hover:bg-red-700 text-white font-bold text-xs rounded-lg shadow-sm transition disabled:opacity-50 cursor-pointer"
+                              >
+                                Simpan
+                              </button>
+                            </div>
                           </div>
 
                           {/* Form Tambah Posisi */}

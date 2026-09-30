@@ -583,7 +583,7 @@ function getSettings() {
   // Mengambil data outlet langsung dari sheet DataOutlet
   const outlets = getOutlets();
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: toleransiTelat, gasUrl: gasUrl } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: toleransiTelat, toleransi_telat: toleransiTelat, gasUrl: gasUrl } };
 }
 
 /**
@@ -631,6 +631,15 @@ function saveSettings(data) {
   // Set enableWorkHours ke B8
   if (data.enableWorkHours !== undefined) {
     sheet.getRange("B8").setValue(data.enableWorkHours ? "TRUE" : "FALSE");
+  }
+
+  // Set toleransi_telat ke A7:B7
+  const rawToleransi = data.toleransiTelat !== undefined ? data.toleransiTelat : data.toleransi_telat;
+  if (rawToleransi !== undefined) {
+    const val = parseInt(rawToleransi, 10);
+    const toleransi = isNaN(val) ? 30 : Math.max(0, val);
+    sheet.getRange("A7").setValue("toleransi_telat");
+    sheet.getRange("B7").setValue(toleransi);
   }
 
   // Update positions if provided
