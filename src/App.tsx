@@ -9,8 +9,7 @@ import {
   setActiveGasUrl, 
   parseApiResponse,
   DEFAULT_OFFLINE_PEGAWAI,
-  DEFAULT_OFFLINE_SETTINGS,
-  DEFAULT_OFFLINE_RINGKASAN
+  DEFAULT_OFFLINE_SETTINGS
 } from './api';
 
 
@@ -98,6 +97,99 @@ export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2
 };
 
 
+export const normalizeDateStr = (str: string): string => {
+  if (!str) return "";
+  const s = String(str).trim();
+  const ymd = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (ymd) {
+    const y = ymd[1];
+    const m = ymd[2].padStart(2, '0');
+    const d = ymd[3].padStart(2, '0');
+    return `${d}/${m}/${y}`;
+  }
+  const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/);
+  if (dmy) {
+    const d = dmy[1].padStart(2, '0');
+    const m = dmy[2].padStart(2, '0');
+    const y = dmy[3].length === 2 ? '20' + dmy[3] : dmy[3];
+    return `${d}/${m}/${y}`;
+  }
+  return s;
+};
+
+/**
+ * Mengembalikan tanggal bisnis resmi dalam timezone Asia/Jakarta (WIB).
+ * Format default "DD/MM/YYYY", atau "YYYY-MM-DD" jika parameter format ditentukan.
+ */
+export const getBusinessDateJakarta = (dateObj: Date = new Date(), format: 'DD/MM/YYYY' | 'YYYY-MM-DD' = 'DD/MM/YYYY'): string => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).formatToParts(dateObj);
+
+    const day = parts.find(p => p.type === 'day')?.value || '01';
+    const month = parts.find(p => p.type === 'month')?.value || '01';
+    const year = parts.find(p => p.type === 'year')?.value || '2026';
+
+    if (format === 'YYYY-MM-DD') {
+      return `${year}-${month}-${day}`;
+    }
+    return `${day}/${month}/${year}`;
+  } catch (e) {
+    const d = new Date(dateObj.getTime() + (7 * 3600000 + dateObj.getTimezoneOffset() * 60000));
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const year = d.getFullYear().toString();
+    if (format === 'YYYY-MM-DD') {
+      return `${year}-${month}-${day}`;
+    }
+    return `${day}/${month}/${year}`;
+  }
+};
+
+/**
+ * Mengembalikan total menit dari tengah malam (0 - 1439) dalam timezone Asia/Jakarta (WIB).
+ */
+export const getJakartaMinutes = (dateObj: Date = new Date()): number => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(dateObj);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+    return hour * 60 + minute;
+  } catch (e) {
+    const d = new Date(dateObj.getTime() + (7 * 3600000 + dateObj.getTimezoneOffset() * 60000));
+    return d.getHours() * 60 + d.getMinutes();
+  }
+};
+
+/**
+ * Mengembalikan string jam "HH:MM" dalam timezone Asia/Jakarta (WIB).
+ */
+export const getJakartaTimeStr = (dateObj: Date = new Date()): string => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(dateObj);
+    const hour = (parts.find(p => p.type === 'hour')?.value || '00').padStart(2, '0');
+    const minute = (parts.find(p => p.type === 'minute')?.value || '00').padStart(2, '0');
+    return `${hour}:${minute}`;
+  } catch (e) {
+    const d = new Date(dateObj.getTime() + (7 * 3600000 + dateObj.getTimezoneOffset() * 60000));
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  }
+};
+
 export const formatSheetDate = (val: any): string => {
   if (!val) return "";
   const str = String(val).trim();
@@ -108,15 +200,11 @@ export const formatSheetDate = (val: any): string => {
     if (d.getFullYear() === 1899) {
       return "-";
     }
-    const day = d.getDate().toString().padStart(2, '0');
-    const month = (d.getMonth() + 1).toString().padStart(2, '0');
-    const year = d.getFullYear();
-    return `${day}/${month}/${year}`;
+    return getBusinessDateJakarta(d);
   }
   
-  return str;
+  return normalizeDateStr(str);
 };
-
 
 export const formatSheetTime = (val: any): string => {
   if (val === null || val === undefined || val === "" || val === "-") return "-";
@@ -124,9 +212,7 @@ export const formatSheetTime = (val: any): string => {
   // 1. Date object (instanceof or object with getHours)
   if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]' || (typeof val === 'object' && typeof val?.getHours === 'function')) {
     try {
-      const h = String(val.getHours()).padStart(2, '0');
-      const m = String(val.getMinutes()).padStart(2, '0');
-      return `${h}:${m}`;
+      return getJakartaTimeStr(val);
     } catch (e) {}
   }
 
@@ -135,9 +221,7 @@ export const formatSheetTime = (val: any): string => {
     if (val > 100000000) {
       try {
         const d = new Date(val);
-        const h = String(d.getHours()).padStart(2, '0');
-        const m = String(d.getMinutes()).padStart(2, '0');
-        return `${h}:${m}`;
+        return getJakartaTimeStr(d);
       } catch (e) {}
     }
     let frac = val % 1;
@@ -156,9 +240,7 @@ export const formatSheetTime = (val: any): string => {
   if (str.includes("T") && !isNaN(Date.parse(str))) {
     try {
       const d = new Date(str);
-      const h = String(d.getHours()).padStart(2, '0');
-      const m = String(d.getMinutes()).padStart(2, '0');
-      return `${h}:${m}`;
+      return getJakartaTimeStr(d);
     } catch (e) {}
   }
 
@@ -173,7 +255,6 @@ export const formatSheetTime = (val: any): string => {
   return "-";
 };
 
-
 export const getDirectDriveUrl = (url: string | null | undefined): string => {
   if (!url) return "";
   const str = String(url).trim();
@@ -187,30 +268,7 @@ export const getDirectDriveUrl = (url: string | null | undefined): string => {
 };
 
 export const getTodayString = (dateObj: Date = new Date()): string => {
-  try {
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Jakarta',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    }).format(dateObj); // "DD/MM/YYYY" e.g. "30/09/2026"
-  } catch (e) {
-    const d = new Date(dateObj.getTime() + (7 * 3600000 + dateObj.getTimezoneOffset() * 60000));
-    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
-  }
-};
-
-export const normalizeDateStr = (str: string): string => {
-  if (!str) return "";
-  const cleaned = str.trim().replace(/-/g, '/');
-  const parts = cleaned.split('/');
-  if (parts.length === 3) {
-    const d = parts[0].padStart(2, '0');
-    const m = parts[1].padStart(2, '0');
-    const y = parts[2];
-    return `${d}/${m}/${y.length === 2 ? '20' + y : y}`;
-  }
-  return cleaned;
+  return getBusinessDateJakarta(dateObj);
 };
 
 export const hasValidTime = (val: any): boolean => {
@@ -223,9 +281,8 @@ export const isToday = (dateVal: any): boolean => {
   if (!dateVal) return false;
   const formatted = formatSheetDate(dateVal);
   const normRecord = normalizeDateStr(formatted);
-  const normToday = normalizeDateStr(getTodayString());
-  const normTodayLocal = normalizeDateStr(new Date().toLocaleDateString('id-ID'));
-  return normRecord === normToday || normRecord === normTodayLocal;
+  const normToday = normalizeDateStr(getBusinessDateJakarta());
+  return normRecord === normToday;
 };
 
 export const findOpenAttendanceToday = (records: any[]): any | null => {
@@ -688,22 +745,24 @@ export default function App() {
     const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
     if (!workHoursActive) return false;
 
-    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || "").toLowerCase().trim());
     if (posisiConfig && posisiConfig.enabled === false) return false;
 
-    const now = new Date();
-    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+    const totalMinutes = getJakartaMinutes();
 
     const jamMasuk = formatSheetTime(posisiConfig?.jamMasuk) || "08:00";
     const matchMasuk = jamMasuk.match(/^(\d{1,2}):(\d{2})$/);
     const jm = matchMasuk ? parseInt(matchMasuk[1], 10) : 8;
     const mm = matchMasuk ? parseInt(matchMasuk[2], 10) : 0;
     const jamMasukMenit = jm * 60 + mm;
-    const toleransi = settingsData?.toleransiTelat ?? 30;
+    const toleransi = settingsData?.toleransiTelat ?? settingsData?.toleransi_telat ?? 60;
+    const batasToleransiMenit = jamMasukMenit + toleransi;
 
-    // Cuma dipakai buat tampilan/validasi form (UX). Keputusan final (termasuk blokir
-    // kalau lewat toleransi) tetap di backend processForm, ini cuma biar konsisten.
-    return totalMinutes > jamMasukMenit && totalMinutes <= jamMasukMenit + toleransi;
+    // Sesuai aturan Toleransi Keterlambatan:
+    // Sampai dengan jamMasuk + toleransi (inclusive) adalah TEPAT WAKTU / NORMAL.
+    // Contoh: Masuk 08:00 + toleransi 60m = 09:00.
+    // 08:20 -> NORMAL, 08:59 -> NORMAL, 09:00 -> NORMAL, 09:01 -> TELAT.
+    return totalMinutes > batasToleransiMenit;
   };
 
 
@@ -717,11 +776,10 @@ export default function App() {
     const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
     if (!workHoursActive) return false;
 
-    const posisiConfig = availablePositions.find(p => p.name === posisi);
+    const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || "").toLowerCase().trim());
     if (posisiConfig && posisiConfig.enabled === false) return false;
 
-    const now = new Date();
-    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+    const totalMinutes = getJakartaMinutes();
 
     const jamPulang = formatSheetTime(posisiConfig?.jamPulang) || "20:00";
     const matchPulang = jamPulang.match(/^(\d{1,2}):(\d{2})$/);
@@ -729,8 +787,7 @@ export default function App() {
     const mp = matchPulang ? parseInt(matchPulang[2], 10) : 0;
     const jamPulangMenit = jp * 60 + mp;
 
-    // Sama seperti backend: lembur (>=13 jam kerja) sudah ditangani terpisah di sana,
-    // ini cuma buat munculin field alasan kalau pulang sebelum jadwal.
+    // Pulang sebelum jadwal jam pulang posisi
     return totalMinutes < jamPulangMenit;
   };
 
@@ -980,12 +1037,9 @@ export default function App() {
         throw new Error(data.message || 'Unknown error');
       }
     } catch (e: any) {
-      console.warn(`[fetchRiwayat] Mode offline / fallback:`, e?.message || e);
-      setRiwayat([
-        { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "-", totalJam: "-", statusMasuk: "TEPAT WAKTU", statusPulang: "-", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-        { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", totalJam: "11j 30m", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-      ]);
-      setErrorRiwayat("");
+      console.warn(`[fetchRiwayat] Gagal memuat riwayat:`, e?.message || e);
+      setRiwayat([]);
+      setErrorRiwayat(e?.message ? `Gagal memuat riwayat: ${e.message}` : "Gagal memuat riwayat absensi.");
     } finally {
       setLoadingRiwayat(false);
     }
@@ -998,10 +1052,8 @@ export default function App() {
     const todayStr = getTodayString();
 
     if (!GAS_URL) {
-      setTimeout(() => {
-        setRingkasanHarian([]);
-        setLoadingRingkasan(false);
-      }, 500);
+      setErrorRingkasan("URL Google Apps Script belum terkonfigurasi.");
+      setLoadingRingkasan(false);
       return;
     }
 
@@ -1019,40 +1071,14 @@ export default function App() {
           jamPulang: formatSheetTime(r.jamPulang),
         }));
         setRingkasanHarian(formattedData);
-        try {
-          localStorage.setItem("cached_ringkasan_harian", JSON.stringify({
-            date: todayStr,
-            data: formattedData
-          }));
-        } catch (e) {}
         setErrorRingkasan("");
       } else {
-        throw new Error(data.message || 'Unknown error');
+        throw new Error(data.message || 'Gagal memuat ringkasan absensi');
       }
     } catch (e: any) {
-      console.warn(`[fetchRingkasanHarian] Mode offline / fallback:`, e?.message || e);
-      // Validasi cache: hanya pakai cache jika tanggalnya sesuai hari ini
-      let loaded = false;
-      try {
-        const cached = localStorage.getItem("cached_ringkasan_harian");
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (parsed && parsed.date === todayStr && Array.isArray(parsed.data)) {
-            setRingkasanHarian(parsed.data);
-            loaded = true;
-          } else if (Array.isArray(parsed) && parsed.length > 0) {
-            const todayRecords = parsed.filter((r: any) => normalizeDateStr(r.tanggal) === normalizeDateStr(todayStr));
-            if (todayRecords.length > 0) {
-              setRingkasanHarian(todayRecords);
-              loaded = true;
-            }
-          }
-        }
-      } catch (err) {}
-      if (!loaded) {
-        setRingkasanHarian([]);
-      }
-      setErrorRingkasan("");
+      console.error(`[fetchRingkasanHarian] Gagal memuat ringkasan harian:`, e?.message || e);
+      setErrorRingkasan(e?.message ? `Data absensi gagal dimuat (${e.message})` : "Data absensi gagal dimuat.");
+      setRingkasanHarian([]);
     } finally {
       setLoadingRingkasan(false);
     }
@@ -1603,7 +1629,7 @@ export default function App() {
 
 
         const now = new Date();
-        const tgl = `${now.toLocaleDateString('id-ID')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+        const tgl = `${getBusinessDateJakarta(now)} ${getJakartaTimeStr(now)} WIB`;
         const namaUser = nama || "Pegawai";
         
         const fSize = Math.min(w * 0.05, 30);
@@ -1651,6 +1677,24 @@ export default function App() {
         // 3. Jika belum pernah absen datang hari ini
         return toast.error("Anda belum absen DATANG hari ini!");
       }
+
+      // 4. Validasi Jam Pulang Posisi (Bug #2):
+      // Jika jam kerja posisi aktif, PULANG sebelum jam pulang HARUS DITOLAK
+      const rawHours = settingsData?.enableWorkHours;
+      const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+      const targetPosisi = (openRecord?.posisi || posisi || "").toLowerCase().trim();
+      const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === targetPosisi);
+      if (workHoursActive && (!posisiConfig || posisiConfig.enabled !== false)) {
+        const jamPulang = formatSheetTime(posisiConfig?.jamPulang) || "20:00";
+        const matchPulang = jamPulang.match(/^(\d{1,2}):(\d{2})$/);
+        const jp = matchPulang ? parseInt(matchPulang[1], 10) : 20;
+        const mp = matchPulang ? parseInt(matchPulang[2], 10) : 0;
+        const jamPulangMenit = jp * 60 + mp;
+        const currentMinutes = getJakartaMinutes();
+        if (currentMinutes < jamPulangMenit) {
+          return toast.error(`Belum waktunya absen PULANG. Jam pulang Anda adalah ${jamPulang}.`);
+        }
+      }
     }
 
 
@@ -1669,7 +1713,6 @@ export default function App() {
       if (!outlet) return toast.error("Pilih Outlet tempat Anda absen!");
       if (!imageBase64) return toast.error("Silahkan ambil foto selfie bukti absensi!");
       if (isLate && !keteranganTelat) return toast.error("Harap isi keterangan alasan Anda telat!");
-      if (isEarlyLeave && !keteranganPulangCepat) return toast.error("Harap isi keterangan alasan Anda pulang cepat!");
     } else {
       if (!alasan) return toast.error("Alasan detail tidak boleh kosong!");
       if (!imageBase64) return toast.error("Harap lampirkan bukti foto (Surat dokter / bukti lainnya)!");
@@ -2124,19 +2167,16 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Alasan Pulang Cepat */}
-                {isEarlyLeave && (
-                  <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                    <label className="block text-sm font-semibold text-neutral-700 mb-1">
-                      Keterangan Pulang Cepat <span className="text-red-500">*</span>
-                    </label>
-                    <input 
-                      type="text" 
-                      value={keteranganPulangCepat}
-                      onChange={e => setKeteranganPulangCepat(e.target.value)}
-                      placeholder="Masukkan alasan pulang cepat (mis. sakit, izin)..."
-                      className="w-full p-2.5 bg-neutral-50 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 outline-none transition"
-                    />
+                {/* Peringatan Belum Waktunya Absen Pulang */}
+                {keterangan === 'PULANG' && isEarlyLeave && (
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-900 rounded-lg flex items-start gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs">
+                      <p className="font-bold text-amber-900 text-sm">Belum Waktunya Absen PULANG</p>
+                      <p className="mt-0.5 text-amber-800 leading-relaxed">
+                        Jam pulang Anda untuk posisi <strong>{posisi}</strong> adalah <strong>{formatSheetTime(availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || '').toLowerCase().trim())?.jamPulang) || "20:00"}</strong>. Absen pulang sebelum jam kepulangan resmi ditolak oleh sistem.
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -2276,14 +2316,20 @@ export default function App() {
 
 
           <button 
+            type="button"
             onClick={kirimAbsen}
-            disabled={loadingSubmit}
-            className="w-full flex items-center justify-center gap-2 bg-[#cc0000] hover:bg-[#a30000] text-white font-bold py-3.5 px-4 rounded-md shadow transition disabled:opacity-70 disabled:cursor-not-allowed mt-6"
+            disabled={loadingSubmit || (keterangan === 'PULANG' && isEarlyLeave)}
+            className="w-full flex items-center justify-center gap-2 bg-[#cc0000] hover:bg-[#a30000] text-white font-bold py-3.5 px-4 rounded-md shadow transition disabled:opacity-60 disabled:cursor-not-allowed mt-6 cursor-pointer"
           >
             {loadingSubmit ? (
               <>
                 <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                 <span>Memproses...</span>
+              </>
+            ) : (keterangan === 'PULANG' && isEarlyLeave) ? (
+              <>
+                <Clock className="w-5 h-5" />
+                <span>Belum Waktunya Pulang ({formatSheetTime(availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || '').toLowerCase().trim())?.jamPulang) || "20:00"})</span>
               </>
             ) : (
               <>
@@ -2625,6 +2671,20 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                </div>
+              ) : errorRingkasan ? (
+                <div className="text-center py-10 px-4 border border-red-200 bg-red-50 rounded-xl flex flex-col items-center justify-center gap-3">
+                  <AlertCircle className="w-8 h-8 text-red-600" />
+                  <div>
+                    <p className="font-bold text-red-800 text-sm">Data absensi gagal dimuat.</p>
+                    <p className="text-xs text-red-600 mt-1 max-w-md">{errorRingkasan}</p>
+                  </div>
+                  <button 
+                    onClick={fetchRingkasanHarian}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg shadow transition cursor-pointer"
+                  >
+                    Coba Lagi
+                  </button>
                 </div>
               ) : ringkasanHarian.length === 0 ? (
                 <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada absensi hari ini ({todayStr}).</div>

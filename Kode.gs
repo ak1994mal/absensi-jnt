@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-09-30-v2.7.1-fixdate";
+const BACKEND_VERSION = "2026-10-01-v2.8.0-fixattendance";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -27,7 +27,7 @@ function getDeploymentInfo() {
     backendVersion: BACKEND_VERSION,
     serverTime: new Date().toISOString(),
     parserVersion: "safe-time-parser-v2",
-    features: ["prependRow2", "robustTimeParser", "multiOutletSearch", "gpsUrl", "displayValues", "saveSettingsViaGetAndPost"]
+    features: ["prependRow2", "robustTimeParser", "multiOutletSearch", "gpsUrl", "displayValues", "saveSettingsViaGetAndPost", "strictPulangCheck", "inclusiveLatenessTolerance"]
   };
 }
 
@@ -269,14 +269,13 @@ function processForm(data) {
     const ss = getSpreadsheet();
     const dateObj = new Date();
     
-    // Format Tanggal: DD/MM/YYYY
-    const day = ("0" + dateObj.getDate()).slice(-2);
-    const month = ("0" + (dateObj.getMonth() + 1)).slice(-2);
-    const year = dateObj.getFullYear();
-    const tanggalStr = day + "/" + month + "/" + year;
-    
-    // Format Jam: HH:MM
-    const jam = ("0" + dateObj.getHours()).slice(-2) + ":" + ("0" + dateObj.getMinutes()).slice(-2);
+    // Format Tanggal & Jam berdasarkan timezone bisnis Asia/Jakarta (WIB)
+    const tanggalStr = Utilities.formatDate(dateObj, "Asia/Jakarta", "dd/MM/yyyy");
+    const jam = Utilities.formatDate(dateObj, "Asia/Jakarta", "HH:mm");
+    const jamParts = jam.split(":");
+    const jamSekarangMenit = (parseInt(jamParts[0], 10) || 0) * 60 + (parseInt(jamParts[1], 10) || 0);
+    const minutes = jamSekarangMenit;
+
     const lat = data.lat !== undefined && data.lat !== null && data.lat !== "" ? Number(data.lat) : (data.latitude ? Number(data.latitude) : null);
     const lng = data.lng !== undefined && data.lng !== null && data.lng !== "" ? Number(data.lng) : (data.longitude ? Number(data.longitude) : null);
     const rawLokasi = data.lokasi || data.lokasiPulang || data.lokasiDatang || "";
@@ -377,23 +376,17 @@ function processForm(data) {
 
       let statusMasuk = "TEPAT WAKTU";
       if (isHoursActive) {
-        // Cek telat & batas absen berdasarkan jam masuk posisi (DataPosisi) + toleransi (Settings!B7)
+        // Toleransi Keterlambatan (Settings!B7 / toleransi_telat):
+        // Misalnya Jam Masuk 08:00 (480m), toleransi 60 menit.
+        // Batas toleransi = 480 + 60 = 540m (09:00).
+        // Waktu <= 540 (misal 08:20, 08:59, 09:00) -> TEPAT WAKTU (NORMAL).
+        // Waktu > 540 (misal 09:01) -> TELAT.
         const jamMasukPosisi = getJamMasukPosisi(data.posisi);
         const toleransiMenit = getToleransiTelat();
         const jamMasukMenit = timeStrToMinutes(jamMasukPosisi);
-        const batasTelatMenit = jamMasukMenit + toleransiMenit;
-        const minutes = dateObj.getHours() * 60 + dateObj.getMinutes();
+        const batasToleransiMenit = jamMasukMenit + toleransiMenit;
 
-        if (minutes > batasTelatMenit) {
-          const batasStr = minutesToTimeStr(batasTelatMenit);
-          return {
-            status: "error",
-            message: `Absen DATANG ditolak. Batas absen untuk posisi ${data.posisi} adalah ${jamMasukPosisi} + toleransi ${toleransiMenit} menit (maksimal ${batasStr}). Silakan ajukan IZIN/SAKIT jika terlambat lebih dari batas ini.`,
-            backendVersion: BACKEND_VERSION
-          };
-        }
-
-        statusMasuk = minutes > jamMasukMenit ? "TELAT" : "TEPAT WAKTU";
+        statusMasuk = (minutes <= batasToleransiMenit) ? "TEPAT WAKTU" : "TELAT";
       }
 
       const filename = "Masuk-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
@@ -442,6 +435,20 @@ function processForm(data) {
       if (existingJamPulang !== "-") { 
         return { status: "error", message: "Anda sudah absen PULANG hari ini.", backendVersion: BACKEND_VERSION };
       }
+
+      // Validasi Jam Pulang Posisi (Enforcement Backend):
+      // Jika jam kerja aktif untuk posisi ini, PULANG sebelum jam pulang jadwal posisi HARUS DITOLAK.
+      if (isPosisiHoursEnabled(data.posisi, ss)) {
+        const jamPulangPosisi = getJamPulangPosisi(data.posisi);
+        const jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
+        if (jamSekarangMenit < jamPulangJadwalMenit) {
+          return {
+            status: "error",
+            message: `Belum waktunya absen PULANG. Jam pulang Anda adalah ${jamPulangPosisi}.`,
+            backendVersion: BACKEND_VERSION
+          };
+        }
+      }
       
       // Normalisasi jam datang: coba dari spreadsheet kolom E (index 4) dulu (displayValues / values), lalu fallback ke payload frontend
       var rawFromDisplay = displayRange[userRowIndex - 1] ? displayRange[userRowIndex - 1][4] : null;
@@ -464,10 +471,7 @@ function processForm(data) {
         if (matchDatang) {
           var jamH = parseInt(matchDatang[1], 10) || 0;
           var jamM = parseInt(matchDatang[2], 10) || 0;
-          var hoursDiff = dateObj.getHours() - jamH;
-          var minsDiff = dateObj.getMinutes() - jamM;
-          
-          var totalMins = (hoursDiff * 60) + minsDiff;
+          var totalMins = jamSekarangMenit - (jamH * 60 + jamM);
           if (totalMins < 0) totalMins = 0;
           
           var rH = Math.floor(totalMins / 60);
@@ -480,17 +484,7 @@ function processForm(data) {
         }
       }
 
-      // Deteksi pulang cepat: bandingkan jam pulang aktual vs jadwal jam pulang posisi (DataPosisi).
-      // Hanya jika aturan jam kerja aktif dan tidak sedang lembur.
-      if (statusPulang !== "LEMBUR" && isPosisiHoursEnabled(data.posisi, ss)) {
-        var jamPulangPosisi = getJamPulangPosisi(data.posisi);
-        var jamPulangJadwalMenit = timeStrToMinutes(jamPulangPosisi);
-        var jamSekarangMenit = dateObj.getHours() * 60 + dateObj.getMinutes();
-        if (jamSekarangMenit < jamPulangJadwalMenit) {
-          statusPulang = "PULANG CEPAT";
-        }
-      }
-      var keteranganPulang = (statusPulang === "PULANG CEPAT") ? (data.alasan || "-") : "-";
+      var keteranganPulang = data.alasan || "-";
 
       var filename = "Pulang-" + data.nama.replace(/\s+/g, '-') + "-" + new Date().getTime() + ".jpg";
       var imageUrl = uploadImageToDrive(data.image, filename);
@@ -1069,10 +1063,14 @@ function parseSheetTime(val) {
 function parseSheetDate(val) {
   if (!val) return "";
   if (val instanceof Date) {
-    const day = ("0" + val.getDate()).slice(-2);
-    const month = ("0" + (val.getMonth() + 1)).slice(-2);
-    const year = val.getFullYear();
-    return day + "/" + month + "/" + year;
+    try {
+      return Utilities.formatDate(val, "Asia/Jakarta", "dd/MM/yyyy");
+    } catch (e) {
+      const day = ("0" + val.getDate()).slice(-2);
+      const month = ("0" + (val.getMonth() + 1)).slice(-2);
+      const year = val.getFullYear();
+      return day + "/" + month + "/" + year;
+    }
   }
   
   const str = String(val).trim();
@@ -1083,40 +1081,38 @@ function parseSheetDate(val) {
     try {
       const d = new Date(str);
       if (!isNaN(d.getTime())) {
-        const day = ("0" + d.getDate()).slice(-2);
-        const month = ("0" + (d.getMonth() + 1)).slice(-2);
-        const year = d.getFullYear();
-        return day + "/" + month + "/" + year;
+        return Utilities.formatDate(d, "Asia/Jakarta", "dd/MM/yyyy");
       }
     } catch (e) {}
   }
   
-  // Handle "YYYY-MM-DD" format
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-    try {
-      const d = new Date(str);
-      if (!isNaN(d.getTime())) {
-        const day = ("0" + d.getDate()).slice(-2);
-        const month = ("0" + (d.getMonth() + 1)).slice(-2);
-        const year = d.getFullYear();
-        return day + "/" + month + "/" + year;
-      }
-    } catch(e) {}
+  // Handle "YYYY-MM-DD" or "YYYY/MM/DD" format
+  const ymd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (ymd) {
+    return ("0" + ymd[3]).slice(-2) + "/" + ("0" + ymd[2]).slice(-2) + "/" + ymd[1];
   }
 
-  // Handle standard "DD/MM/YYYY" or other string format
+  // Handle "DD-MM-YYYY" or "DD/MM/YYYY" format
+  const dmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/);
+  if (dmy) {
+    const y = dmy[3].length === 2 ? ("20" + dmy[3]) : dmy[3];
+    return ("0" + dmy[1]).slice(-2) + "/" + ("0" + dmy[2]).slice(-2) + "/" + y;
+  }
+
   return str;
 }
 
 function normalizeDateStr(str) {
   if (!str) return "";
-  const cleaned = String(str).trim().replace(/-/g, '/');
-  const parts = cleaned.split('/');
-  if (parts.length === 3) {
-    const d = ("0" + parts[0]).slice(-2);
-    const m = ("0" + parts[1]).slice(-2);
-    const y = parts[2].length === 2 ? ("20" + parts[2]) : parts[2];
-    return d + "/" + m + "/" + y;
+  const s = String(str).trim();
+  const ymd = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (ymd) {
+    return ("0" + ymd[3]).slice(-2) + "/" + ("0" + ymd[2]).slice(-2) + "/" + ymd[1];
   }
-  return cleaned;
+  const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/);
+  if (dmy) {
+    const y = dmy[3].length === 2 ? ("20" + dmy[3]) : dmy[3];
+    return ("0" + dmy[1]).slice(-2) + "/" + ("0" + dmy[2]).slice(-2) + "/" + y;
+  }
+  return s;
 }

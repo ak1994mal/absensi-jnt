@@ -1,7 +1,28 @@
 // API Helper for Google Apps Script Integration
 
-// Dipakai HANYA untuk request pertama (getSettings) sebelum Settings sheet berhasil dibaca. Setelah itu, URL aktif mengikuti nilai gasUrl dari Settings sheet, disimpan di module-level variable, BUKAN konstanta ini.
-export const BOOTSTRAP_GAS_URL = (import.meta as any).env.VITE_GAS_URL || "https://script.google.com/macros/s/AKfycbwiyyUb4fJ_9amA2GvMClr1KrI6ZECC9o4icsJzySSYVqa-Ulz798tlPquEO74tHhkk/exec";
+// URL Web App deployment aktif terverifikasi (Production LIVE Google Apps Script)
+export const VERIFIED_GAS_URL = "https://script.google.com/macros/s/AKfycbwiyyUb4fJ_9amA2GvMClr1KrI6ZECC9o4icsJzySSYVqa-Ulz798tlPquEO74tHhkk/exec";
+
+// URL yang diketahui usang / meminta login Google / non-publik
+const BLACKLISTED_GAS_URLS = [
+  "AKfycbwVrPuN3FH2UBiq1gZ4ZsgjqZxwuISWB-HI7iAzmURA-NqQAMFWwJjaFkDGsS9-6jNd", // Memerlukan login Google
+  "AKfycbwwPFCh_erWDclX-zyWFhkgFtlMMZcU5egyRzAN3Op23nNfaw16zVJeoujJo4JpvONM"
+];
+
+const resolveBootstrapGasUrl = (): string => {
+  const envUrl = (import.meta as any).env?.VITE_GAS_URL;
+  if (typeof envUrl === "string" && envUrl.trim()) {
+    const trimmed = envUrl.trim();
+    const isBlacklisted = BLACKLISTED_GAS_URLS.some(bad => trimmed.includes(bad));
+    if (!isBlacklisted && trimmed.startsWith("https://script.google.com/macros/s/")) {
+      return trimmed;
+    }
+  }
+  return VERIFIED_GAS_URL;
+};
+
+// Dipakai untuk inisialisasi awal. URL aktif dapat diperbarui dari nilai Settings sheet (B9).
+export const BOOTSTRAP_GAS_URL = resolveBootstrapGasUrl();
 
 // Module-level variable sebagai satu sumber kebenaran (single source of truth) URL GAS aktif
 let activeGasUrl: string = BOOTSTRAP_GAS_URL;
@@ -12,7 +33,11 @@ export const getActiveGasUrl = (): string => {
 
 export const setActiveGasUrl = (url: string): void => {
   if (url && typeof url === "string") {
-    activeGasUrl = url.trim();
+    const trimmed = url.trim();
+    const isBlacklisted = BLACKLISTED_GAS_URLS.some(bad => trimmed.includes(bad));
+    if (!isBlacklisted && trimmed.startsWith("https://script.google.com/macros/s/")) {
+      activeGasUrl = trimmed;
+    }
   }
 };
 
@@ -78,41 +103,10 @@ export const DEFAULT_OFFLINE_OUTLETS: Array<{ nama: string; lat: number; lng: nu
 export const DEFAULT_OFFLINE_SETTINGS = {
   requireLocation: true,
   enableWorkHours: true,
-  toleransiTelat: 30,
+  toleransiTelat: 60,
   positions: DEFAULT_OFFLINE_POSITIONS,
   outlets: DEFAULT_OFFLINE_OUTLETS,
   favicon: "",
   gasUrl: ""
 };
 
-export const DEFAULT_OFFLINE_RINGKASAN = [
-  { 
-    nama: "Mohammad Danang", 
-    posisi: "Admin",
-    outlet: "YZ_ MDP PASIR JAHA BALARAJA", 
-    jamDatang: "07:55", 
-    statusMasuk: "TEPAT WAKTU",
-    jamPulang: "20:05",
-    totalJam: "12j 10m",
-    statusPulang: "NORMAL",
-    fotoDatang: "https://placehold.co/100x100?text=Masuk",
-    fotoPulang: "https://placehold.co/100x100?text=Pulang",
-    lokasiDatang: "https://maps.google.com/?q=-6.2056,106.4513",
-    lokasiPulang: "https://maps.google.com/?q=-6.2056,106.4513"
-  },
-  { 
-    nama: "Fitri Fajria", 
-    posisi: "Pickup",
-    outlet: "YZ_ MDP JAYANTI CIKANDE", 
-    jamDatang: "08:40", 
-    statusMasuk: "TELAT",
-    alasan: "Ban bocor di jalan tol",
-    jamPulang: "-",
-    totalJam: "-",
-    statusPulang: "-",
-    fotoDatang: "https://placehold.co/100x100?text=Masuk",
-    fotoPulang: "",
-    lokasiDatang: "https://maps.google.com/?q=-6.2065,106.3862",
-    lokasiPulang: ""
-  }
-];

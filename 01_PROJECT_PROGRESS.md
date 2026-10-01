@@ -9,8 +9,8 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.5.1` (Production Stable) |
-| **Terakhir Diperbarui** | 24 September 2026 |
+| **Versi Saat Ini** | `v2.8.0` (Production Stable) |
+| **Terakhir Diperbarui** | 01 Oktober 2026 |
 | **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
 | **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `Settings`) + Google Drive API (Foto Selfie & Bukti) |
@@ -112,6 +112,23 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.8.0] — 01 Oktober 2026
+- **FIX (Bug #1 — Ringkasan Absensi Hari Ini Sisi Owner):**
+  - Mengaudit perbedaan Preview vs Live: Preview sebelumnya membaca `VITE_GAS_URL` lama/rusak yang mengarah ke login Google, sehingga `fetchRingkasanHarian` gagal dan menelan error (`setErrorRingkasan("")`) lalu menampilkan "Belum ada absensi hari ini (01/10/2026)".
+  - Memperbaiki `BOOTSTRAP_GAS_URL` di `src/api.ts` dengan menyaring URL usang dan memastikan mengarah ke URL produksi aktif terverifikasi (`AKfycbwiyyUb...`).
+  - Menghapus fallback dummy `DEFAULT_OFFLINE_RINGKASAN` dan fallback riwayat dummy.
+  - Jika request API gagal, menampilkan error transparan "Data absensi gagal dimuat." lengkap dengan tombol "Coba Lagi", tidak lagi memalsukannya sebagai "Belum ada absensi hari ini".
+  - Mengimplementasikan helper terpusat `getBusinessDateJakarta()`, `getJakartaMinutes()`, `getJakartaTimeStr()`, dan normalisasi format dua arah (`normalizeDateStr`) untuk `YYYY-MM-DD` dan `DD/MM/YYYY`.
+- **FIX (Bug #2 — Jam Masuk & Pulang Aktif):**
+  - Enforcement utama di Backend (`Kode.gs`): Jika aturan jam kerja posisi aktif, transaksi `PULANG` sebelum jadwal jam pulang posisi (dibaca dari `DataPosisi`) **DITOLAK** dengan pesan error informatif: *"Belum waktunya absen PULANG. Jam pulang Anda adalah HH:MM."*
+  - Frontend UX: Memeriksa waktu Asia/Jakarta sekarang (`getJakartaMinutes()`). Jika belum mencapai jadwal jam pulang, formulir menampilkan banner peringatan informatif, tombol KIRIM ABSEN dinonaktifkan dengan label *"Belum Waktunya Pulang (HH:MM)"*, dan `kirimAbsen` menolak pengiriman via toast error.
+- **FIX (Bug #3 — Toleransi Keterlambatan):**
+  - Mengoreksi perhitungan keterlambatan di `Kode.gs` dan `src/App.tsx`:
+    `batasToleransiMenit = jamMasukMenit + toleransiMenit`.
+  - Penetapan batas inclusive yang konsisten: Kehadiran sampai dengan batas toleransi (`jamMasuk + toleransi`, misalnya Masuk 08:00 + toleransi 60m = 09:00) dinyatakan **TEPAT WAKTU / NORMAL** (08:20 = NORMAL, 08:59 = NORMAL, 09:00 = NORMAL).
+  - Kehadiran setelah batas toleransi (> 09:00, misalnya 09:01) dicatat berstatus **TELAT** dan pegawai diwajibkan menyertakan alasan keterlambatan.
+  - Sinkronisasi UI Owner Settings untuk pengaturan nilai `toleransi_telat` yang tersimpan langsung ke Google Sheets `Settings!A7:B7`.
 
 ### [v2.5.2] — 24 September 2026
 - **FIX (Lokasi Pulang Kosong, Auto-Fill Pulang pada Form, & Error Simpan Pengaturan 404):**
