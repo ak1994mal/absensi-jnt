@@ -42,6 +42,30 @@ export const setActiveGasUrl = (url: string): void => {
 };
 
 /**
+ * Helper fetch dengan batas waktu (timeout) via AbortController.
+ * Mencegah request menggantung tanpa batas waktu pada jaringan lemah (mis. iPhone/Safari).
+ */
+export function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 20000): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+}
+
+/**
+ * Memeriksa apakah error yang terjadi berasal dari pembatalan / timeout AbortController.
+ */
+export function isAbortError(err: any): boolean {
+  return (
+    err?.name === 'AbortError' ||
+    err?.code === 20 ||
+    (typeof err?.message === 'string' && (err.message.includes('aborted') || err.message.includes('AbortError')))
+  );
+}
+
+/**
  * Safely parses response from Google Apps Script.
  * Catches HTML error responses (like 404 "Halaman Tidak Ditemukan" or Google Drive permission errors)
  * and formats clear human-readable error messages.

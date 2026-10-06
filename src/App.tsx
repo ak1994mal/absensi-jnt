@@ -8,6 +8,8 @@ import {
   getActiveGasUrl, 
   setActiveGasUrl, 
   parseApiResponse,
+  fetchWithTimeout,
+  isAbortError,
   DEFAULT_OFFLINE_PEGAWAI,
   DEFAULT_OFFLINE_SETTINGS
 } from './api';
@@ -551,7 +553,7 @@ export default function App() {
     const finalOptions: RequestInit = { ...options, cache: 'no-store' };
     for (let i = 0; i <= retries; i++) {
       try {
-        const res = await fetch(url, finalOptions);
+        const res = await fetchWithTimeout(url, finalOptions, 20000);
         return res;
       } catch (err) {
         lastErr = err;
@@ -880,7 +882,11 @@ export default function App() {
       }
     } catch (e: any) {
       console.warn(`[fetchSettings] Server terkendala:`, e?.message || e);
-      setErrorSettings("Data outlet belum tersedia atau gagal dimuat dari Google Spreadsheet. Silakan periksa koneksi dan sheet DataOutlet.");
+      if (isAbortError(e)) {
+        setErrorSettings("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+      } else {
+        setErrorSettings("Data outlet belum tersedia atau gagal dimuat dari Google Spreadsheet. Silakan periksa koneksi dan sheet DataOutlet.");
+      }
       return null;
     } finally {
       setLoadingSettings(false);
@@ -929,7 +935,11 @@ export default function App() {
       if (!loaded) {
         setDaftarPegawai(DEFAULT_OFFLINE_PEGAWAI);
       }
-      setErrorNames("");
+      if (isAbortError(err)) {
+        setErrorNames("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+      } else {
+        setErrorNames("");
+      }
     } finally {
       setLoadingNames(false);
     }
@@ -1039,7 +1049,11 @@ export default function App() {
     } catch (e: any) {
       console.warn(`[fetchRiwayat] Gagal memuat riwayat:`, e?.message || e);
       setRiwayat([]);
-      setErrorRiwayat(e?.message ? `Gagal memuat riwayat: ${e.message}` : "Gagal memuat riwayat absensi.");
+      if (isAbortError(e)) {
+        setErrorRiwayat("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+      } else {
+        setErrorRiwayat(e?.message ? `Gagal memuat riwayat: ${e.message}` : "Gagal memuat riwayat absensi.");
+      }
     } finally {
       setLoadingRiwayat(false);
     }
@@ -1077,7 +1091,11 @@ export default function App() {
       }
     } catch (e: any) {
       console.error(`[fetchRingkasanHarian] Gagal memuat ringkasan harian:`, e?.message || e);
-      setErrorRingkasan(e?.message ? `Data absensi gagal dimuat (${e.message})` : "Data absensi gagal dimuat.");
+      if (isAbortError(e)) {
+        setErrorRingkasan("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+      } else {
+        setErrorRingkasan(e?.message ? `Data absensi gagal dimuat (${e.message})` : "Data absensi gagal dimuat.");
+      }
       setRingkasanHarian([]);
     } finally {
       setLoadingRingkasan(false);
@@ -1195,7 +1213,11 @@ export default function App() {
           ]
         }
       ]);
-      setErrorLaporan("");
+      if (isAbortError(e)) {
+        setErrorLaporan("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+      } else {
+        setErrorLaporan("");
+      }
     } finally {
       setLoadingLaporan(false);
     }
@@ -1210,22 +1232,25 @@ export default function App() {
       data
     };
     try {
-      const response = await fetch(targetUrl, {
+      const response = await fetchWithTimeout(targetUrl, {
         method: "POST",
         body: JSON.stringify(payload)
-      });
+      }, 20000);
       return await parseApiResponse(response, 'saveSettings');
     } catch (err: any) {
       console.warn("[saveSettings] POST error, trying GET fallback:", err?.message || err);
       try {
         const url = `${targetUrl}?action=saveSettings&data=${encodeURIComponent(JSON.stringify(data))}`;
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await fetchWithTimeout(url, { cache: 'no-store' }, 20000);
         return await parseApiResponse(response, 'saveSettings');
       } catch (getErr: any) {
         console.warn("[saveSettings] GET fallback failed:", getErr?.message || getErr);
+        const isTimeout = isAbortError(getErr) || isAbortError(err);
         return {
           status: 'error',
-          message: getErr?.message || 'Gagal terhubung ke Google Apps Script'
+          message: isTimeout 
+            ? 'Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...' 
+            : (getErr?.message || 'Gagal terhubung ke Google Apps Script')
         };
       }
     }
@@ -1550,7 +1575,7 @@ export default function App() {
 
 
     try {
-      const res = await fetch(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`, { cache: 'no-store' });
+      const res = await fetchWithTimeout(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`, { cache: 'no-store' }, 20000);
       const data = await parseApiResponse(res, 'getRiwayatBulan');
       if (data.status === 'success') {
         const formattedData = (data.data || []).map((r: any) => ({
@@ -1561,8 +1586,11 @@ export default function App() {
         }));
         setDetailRiwayat(formattedData);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[fetchDetailRiwayat] Mode offline / fallback:', e);
+      if (isAbortError(e)) {
+        toast.info("Koneksi timeout, sinyal mungkin lemah saat memuat riwayat detail.");
+      }
     } finally {
       setLoadingDetail(false);
     }
@@ -1782,10 +1810,10 @@ export default function App() {
         try {
           console.log(`[kirimAbsen] Kirim payload (POST) ke: ${GAS_URL}`);
           console.log(`[kirimAbsen] Data yg dikirim:`, payload);
-          const res = await fetch(GAS_URL, {
+          const res = await fetchWithTimeout(GAS_URL, {
             method: 'POST',
             body: JSON.stringify(payload)
-          });
+          }, 35000); // Timeout 35 detik untuk submit foto + lokasi
           const result = await parseApiResponse(res, 'submitAbsen');
           
           if (result.status === 'success') {
@@ -1806,7 +1834,11 @@ export default function App() {
           }
         } catch (err: any) {
           console.warn(`[kirimAbsen] Exception Fetch/POST:`, err);
-          toast.error(`Error: ${err.message}`);
+          if (isAbortError(err)) {
+            toast.error("Koneksi timeout, sinyal mungkin lemah. Gagal mengirim absensi, silakan coba lagi.");
+          } else {
+            toast.error(`Error: ${err?.message || 'Gagal mengirim absensi'}`);
+          }
         } finally {
           setLoadingSubmit(false);
           setSubmitStatus("");
