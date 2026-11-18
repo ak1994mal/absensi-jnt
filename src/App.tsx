@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe, FileEdit } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import ManajemenPegawaiTab from './components/ManajemenPegawaiTab';
 import JadwalRotasiTab from './components/JadwalRotasiTab';
 import KehadiranPegawaiTab from './components/KehadiranPegawaiTab';
+import KoreksiAbsensiTab from './components/KoreksiAbsensiTab';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -493,7 +494,7 @@ export default function App() {
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [laporanBulananOutlet, setLaporanBulananOutlet] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
-  const [ownerView, setOwnerView] = useState<'harian' | 'kehadiran' | 'jadwal' | 'pegawai' | 'bulanan' | 'outlet' | 'settings'>('harian');
+  const [ownerView, setOwnerView] = useState<'harian' | 'kehadiran' | 'jadwal' | 'pegawai' | 'bulanan' | 'outlet' | 'settings' | 'koreksi'>('harian');
   const [laporanBulananSubView, setLaporanBulananSubView] = useState<'pegawai' | 'outlet'>('pegawai');
   const [targetJamKerja, setTargetJamKerja] = useState<number>(12);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
@@ -2774,6 +2775,13 @@ export default function App() {
                   >
                     Settings
                   </button>
+                  <button 
+                    onClick={() => setOwnerView('koreksi')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer inline-flex items-center gap-1.5 ${ownerView === 'koreksi' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    <FileEdit className="w-3.5 h-3.5" />
+                    Koreksi Absensi
+                  </button>
                 </div>
               </div>
 
@@ -4076,6 +4084,24 @@ export default function App() {
                   ) : (
                      <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Tidak ada data pengaturan.</div>
                   )}
+                </motion.div>
+              )}
+
+              {ownerView === 'koreksi' && (
+                <motion.div
+                  key="owner-koreksi"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <KoreksiAbsensiTab
+                    outlets={settingsData?.outlets || EMPTY_ARRAY}
+                    positions={availablePositions}
+                    todayYmd={getBusinessDateJakarta(new Date(), 'YYYY-MM-DD')}
+                    onRequireAuth={handleRequireOwnerReauth}
+                    onDataChanged={() => fetchRingkasanHarian(ringkasanTanggal)}
+                  />
                 </motion.div>
               )}
             </AnimatePresence>

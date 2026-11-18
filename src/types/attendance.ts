@@ -157,3 +157,57 @@ export interface OutletReadinessAlert {
   nama?: string;
   message: string;
 }
+
+export interface AbsensiAuditRow {
+  rowIndex: number;
+  tanggal: string;
+  nama: string;
+  posisi: string;
+  outlet: string;
+  jamDatang: string;
+  jamPulang: string;
+  totalJam: string;
+  statusMasuk: string;
+  statusPulang: string;
+  statusPulangLabel: string;
+  lokasiDatang: string;
+  lokasiPulang: string;
+  fotoDatang: string;
+  fotoPulang: string;
+  keteranganDatang: string;
+  keteranganPulang: string;
+  editedBy: string;
+  editedAt: string;
+  originalSnapshot: string;
+  isCancelled: boolean;
+}
+
+export interface UpdateAbsensiPayload {
+  rowIndex: number;
+  jamDatang?: string;
+  jamPulang?: string;
+  status?: string;
+  keteranganDatang?: string;
+  keteranganPulang?: string;
+  alasanKoreksi: string;
+}
+
+export interface DeleteAbsensiPayload {
+  rowIndex: number;
+  alasanHapus: string;
+}
+
+export interface AddManualAbsensiPayload {
+  tanggal: string;
+  nama: string;
+  idPegawai?: string;
+  outlet: string;
+  posisi: string;
+  jamDatang: string;
+  jamPulang?: string;
+  status?: string;
+  keteranganDatang?: string;
+  keteranganPulang?: string;
+  alasanManual: string;
+}
+

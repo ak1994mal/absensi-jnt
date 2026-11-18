@@ -65,6 +65,18 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
           }
           return out;
         },
+        getDisplayValues: () => {
+          const out = [];
+          for (let r = 0; r < numRows; r++) {
+            const line = [];
+            for (let c = 0; c < numCols; c++) {
+              const v = self.rows[row - 1 + r] ? self.rows[row - 1 + r][col - 1 + c] : '';
+              line.push(v === null || v === undefined ? '' : String(v));
+            }
+            out.push(line);
+          }
+          return out;
+        },
         setValue: (val) => {
           while (self.rows.length < row) self.rows.push([]);
           while (self.rows[row - 1].length < col) self.rows[row - 1].push('');
@@ -359,4 +371,105 @@ assert.equal(cancelAbsenceRes.status, 'success', cancelAbsenceRes.message);
 assert.equal(ctx.getKetidakhadiran('2026-11-17', '', 'Siti Magang').data.length, 0);
 assert.equal(sheets.get('Data_Absensi').rows.length, absRowsBeforeClose, 'Data_Absensi history preserved on cancelKetidakhadiran');
 
-console.log('ALL 10 VERIFICATION SCENARIOS PASSED SUCCESSFULLY');
+// ==================== KOREKSI ABSENSI MANUAL (v2.9.1) ====================
+env.setTimeIso('2026-11-18T03:00:00.000Z'); // 10:00 WIB Rabu 18 Nov
+token = ctx.ownerLogin({ password: 'jntowner' }).token;
+
+// Budi Pickup (jadwal 14:00-22:00) atau Riska (jadwal 08:30-19:00):
+// Budi absen DATANG di 15:10 (TELAT karena > 14:00 + 60m = 15:00) dan lupa absen pulang
+env.setTimeIso('2026-11-18T08:10:00.000Z'); // 15:10 WIB
+const budiDatang = ctx.processForm({
+  nama: 'Budi Kurir', posisi: 'Pickup', status: 'DATANG', outlet: 'YZ_ MDP JAYANTI CIKANDE',
+  lat: -6.21, lng: 106.42, image: 'data:image/jpeg;base64,/9j/4AAQ'
+});
+assert.equal(budiDatang.status, 'success', budiDatang.message);
+
+// Test 11 (Auth & getAbsensiByDate): Reject missing ownerToken, succeed with valid token
+const unauthGetAbs = ctx.getAbsensiByDate('2026-11-18', '', '', '');
+assert.equal(unauthGetAbs.status, 'error');
+assert.equal(unauthGetAbs.authRequired, true, 'getAbsensiByDate must reject missing ownerToken');
+
+const unauthEditAbs = ctx.updateAbsensi({ rowIndex: 2, jamPulang: '22:00', alasanKoreksi: 'Tes' }, '');
+assert.equal(unauthEditAbs.status, 'error');
+assert.equal(unauthEditAbs.authRequired, true, 'updateAbsensi must reject missing ownerToken');
+
+const listNov18 = ctx.getAbsensiByDate('2026-11-18', '', '', token);
+assert.equal(listNov18.status, 'success', listNov18.message);
+assert.equal(listNov18.data.length, 1);
+const budiRowIdx = listNov18.data[0].rowIndex;
+assert.equal(listNov18.data[0].statusMasuk, 'TELAT');
+assert.equal(listNov18.data[0].statusPulangLabel, 'BELUM PULANG');
+
+// Test 12: Edit jam pulang pegawai yang lupa absen pulang -> durasi terhitung otomatis + PULANG NORMAL + audit trail
+const badPulangBeforeDatang = ctx.updateAbsensi({
+  rowIndex: budiRowIdx, jamPulang: '13:00', alasanKoreksi: 'Tes jam pulang < datang'
+}, token);
+assert.equal(badPulangBeforeDatang.status, 'error', 'jamPulang < jamDatang must be rejected');
+
+const fixPulangRes = ctx.updateAbsensi({
+  rowIndex: budiRowIdx, jamPulang: '22:00', keteranganPulang: 'Lupa checkout', alasanKoreksi: 'Pegawai lupa klik pulang'
+}, token);
+assert.equal(fixPulangRes.status, 'success', fixPulangRes.message);
+assert.equal(fixPulangRes.data.totalJam, '6j 50m');
+assert.equal(fixPulangRes.data.statusPulang, 'NORMAL');
+assert.equal(fixPulangRes.data.statusPulangLabel, 'PULANG NORMAL');
+assert.equal(fixPulangRes.data.editedBy, 'Owner');
+assert.ok(fixPulangRes.data.editedAt.includes('+07:00'), 'EditedAt uses ISO Asia/Jakarta timestamp');
+assert.ok(fixPulangRes.data.originalSnapshot.includes('"jamPulang":"-"'), 'OriginalSnapshot records pre-edit state');
+
+// Test 13: Edit jam masuk dari TELAT (15:10) ke tepat waktu (14:15) -> statusMasuk menjadi TEPAT WAKTU + durasi dihitung ulang!
+const fixDatangRes = ctx.updateAbsensi({
+  rowIndex: budiRowIdx, jamDatang: '14:15', alasanKoreksi: 'Sinyal lemah saat masuk, datang 14:15'
+}, token);
+assert.equal(fixDatangRes.status, 'success', fixDatangRes.message);
+assert.equal(fixDatangRes.data.statusMasuk, 'TEPAT WAKTU', 'Status recalculated from TELAT to TEPAT WAKTU');
+assert.equal(fixDatangRes.data.totalJam, '7j 45m', 'Duration recalculated automatically');
+
+// Test 14: Edit absensi yang sudah punya PULANG -> hitung ulang durasi & status (14:15 -> 19:00 = PULANG CEPAT)
+const earlyEditRes = ctx.updateAbsensi({
+  rowIndex: budiRowIdx, jamPulang: '19:00', alasanKoreksi: 'Pulang lebih awal izin'
+}, token);
+assert.equal(earlyEditRes.status, 'success', earlyEditRes.message);
+assert.equal(earlyEditRes.data.totalJam, '4j 45m');
+assert.equal(earlyEditRes.data.statusPulang, 'PULANG CEPAT');
+
+// Test 15: Tambah absensi manual untuk Riska yang lupa absen total pada 2026-11-18 -> Row 2 + OriginalSnapshot = MANUAL_ENTRY
+const futureManual = ctx.addManualAbsensi({
+  tanggal: '2026-11-25', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin',
+  jamDatang: '08:30', alasanManual: 'Tes masa depan'
+}, token);
+assert.equal(futureManual.status, 'error', 'Future date manual entry must be rejected');
+
+const manualRiska = ctx.addManualAbsensi({
+  tanggal: '2026-11-18', nama: 'Riska', idPegawai: 'EMP001',
+  outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin',
+  jamDatang: '08:30', jamPulang: '19:00', alasanManual: 'HP Riska mati total seharian'
+}, token);
+assert.equal(manualRiska.status, 'success', manualRiska.message);
+assert.equal(manualRiska.rowIndex, 2, 'Manual entry inserted at Row 2');
+assert.equal(manualRiska.data.originalSnapshot, 'MANUAL_ENTRY');
+assert.equal(manualRiska.data.totalJam, '10j 30m');
+assert.equal(manualRiska.data.statusMasuk, 'TEPAT WAKTU');
+
+// Cek duplikasi manual entry untuk Riska pada tanggal yang sama
+const dupManualRiska = ctx.addManualAbsensi({
+  tanggal: '2026-11-18', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin',
+  jamDatang: '09:00', alasanManual: 'Duplikat'
+}, token);
+assert.equal(dupManualRiska.status, 'error', 'Duplicate manual entry on same date must be rejected');
+
+// Test 16: Hapus absensi (deleteAbsensi) -> ditandai DIBATALKAN -> hilang dari Ringkasan Harian & Kehadiran Harian
+const delManualRes = ctx.deleteAbsensi({
+  rowIndex: 2, alasanHapus: 'Data uji coba dibatalkan'
+}, token);
+assert.equal(delManualRes.status, 'success', delManualRes.message);
+
+const ringkasanNov18 = ctx.getRingkasanHarian('2026-11-18');
+assert.equal(ringkasanNov18.data.some((r) => r.nama === 'Riska'), false, 'Deleted (DIBATALKAN) row must NOT appear in Ringkasan Harian');
+assert.equal(ringkasanNov18.data.some((r) => r.nama === 'Budi Kurir'), true, 'Active row still appears in Ringkasan Harian');
+
+const listAfterDelete = ctx.getAbsensiByDate('2026-11-18', '', '', token);
+const cancelledRow = listAfterDelete.data.find((r) => r.nama === 'Riska');
+assert.ok(cancelledRow && cancelledRow.isCancelled && cancelledRow.statusMasuk === 'DIBATALKAN', 'Row preserved with DIBATALKAN status and audit trail');
+
+console.log('ALL 16 VERIFICATION SCENARIOS PASSED SUCCESSFULLY');

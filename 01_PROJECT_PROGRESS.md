@@ -9,8 +9,8 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.9.0` (Siap Deploy GAS & Vercel) |
-| **Terakhir Diperbarui** | 16 November 2026 |
+| **Versi Saat Ini** | `v2.9.1` (Siap Deploy GAS & Vercel) |
+| **Terakhir Diperbarui** | 18 November 2026 |
 | **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, `node scripts/verify-kode-gs.mjs`) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
 | **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `DataPegawai`, `DataOutlet`, `DataPosisi`, `DataPenempatan`, `JadwalHarian`, `DataKetidakhadiran`, `SnapshotAbsensi`, `AbsenIzin`, `Settings`) + Google Drive API |
@@ -104,6 +104,12 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 - [x] **Deteksi Bentrok & Kesiapan Outlet:** Penolakan otomatis jadwal ganda bentrok jam pada tanggal yang sama, konfirmasi khusus saat `LIBUR` bertabrakan dengan `DATANG`/`IZIN`/`SAKIT`, serta alert kesiapan Admin per outlet (`NO_ADMIN`, `ADMIN_ABSENT_NO_BACKUP`, `SCHEDULE_IZIN_CONFLICT`).
 - [x] **Snapshot Penugasan Saat `DATANG` (`SnapshotAbsensi`):** Penugasan efektif saat `DATANG` dibekukan untuk validasi `PULANG` sehingga perubahan jadwal setelah `DATANG` tidak mematahkan proses absen `PULANG`.
 
+### J. Koreksi Absensi Manual & Audit Trail (`Data_Absensi` Kolom P–R)
+- [x] **Tab Owner `Koreksi Absensi`:** Melihat daftar transaksi `Data_Absensi` per tanggal (`Asia/Jakarta`) dengan filter outlet, pencarian nama, dan toggle baris `DIBATALKAN`.
+- [x] **Edit Jam & Hitung Ulang Otomatis:** Koreksi jam datang, jam pulang, status, dan keterangan dengan penghitungan ulang otomatis durasi kerja, `TEPAT WAKTU`/`TELAT`, serta `NORMAL`/`PULANG CEPAT`/`LEMBUR` terhadap target `SnapshotAbsensi` / `DataPosisi`.
+- [x] **Tambah Absensi Manual:** Input transaksi manual untuk pegawai yang lupa absen total (`prependDataRow()` ke Row 2, validasi anti-duplikat & larangan tanggal masa depan, `OriginalSnapshot = "MANUAL_ENTRY"`).
+- [x] **Pembatalan Aman & Jejak Audit (`EditedBy`, `EditedAt`, `OriginalSnapshot`):** Hapus menandai baris sebagai `DIBATALKAN` tanpa menggeser indeks baris sheet, dikecualikan dari `Ringkasan Harian`/`Laporan Bulanan`/`Riwayat`, dan seluruh perubahan tercatat di kolom audit `P–R`.
+
 ---
 
 ## 🔄 3. Sedang Dikerjakan (In Progress)
@@ -128,6 +134,15 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.9.1] — 18 November 2026
+- **FEATURE — Koreksi Absensi Manual & Audit Trail (`KoreksiAbsensiTab.tsx` & `Kode.gs`):**
+  - Menambahkan kolom audit pada `Data_Absensi` tanpa mengubah kolom `A–O`: Kolom P (`EditedBy`), Kolom Q (`EditedAt` ISO Asia/Jakarta), dan Kolom R (`OriginalSnapshot` JSON / `"MANUAL_ENTRY"`), dikelola otomatis oleh `ensureAuditColumns()`.
+  - Menambahkan 4 endpoint baru terproteksi `ownerToken`: `getAbsensiByDate` (GET read-only), `updateAbsensi` (POST edit & recalculate via `recalculateAttendanceStatus()`), `deleteAbsensi` (POST tandai `DIBATALKAN` tanpa menggeser `rowIndex`), dan `addManualAbsensi` (POST sisip Row 2 via `prependDataRow()`).
+  - Menambahkan helper backend `ensureAuditColumns()`, `recalculateAttendanceStatus()`, dan `logAuditTrail()`.
+  - Seluruh pembaca `Data_Absensi` (`getRingkasanHarian`, `computeKehadiranHarianInternal`, `getLaporanBulanan`, `getRiwayat`, `getRiwayatBulan`, `checkHasDatangOnDate`, `processForm`) mengecualikan baris `DIBATALKAN`.
+  - Menambahkan sub-tab Owner ke-8 **"Koreksi Absensi"** lengkap dengan modal Edit (preview Data Lama vs Data Baru), modal Tambah Manual (peringatan duplikat absen), modal konfirmasi Hapus, dan modal Audit Trail.
+  - Sinkronisasi 100% `Kode.gs` ke `src/kodeGsSource.ts` dan penambahan skenario uji lengkap di `scripts/verify-kode-gs.mjs`.
 
 ### [v2.9.0] — 16 November 2026
 - **FEATURE — Manajemen Kehadiran (`DataKetidakhadiran` & Tab `Kehadiran Pegawai` + Ekspansi `Ringkasan Harian`):**

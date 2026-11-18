@@ -292,3 +292,47 @@ export async function fetchPegawaiDetailApi(nama: string, idPegawai?: string, ta
   return gasGet('getPegawaiDetail', { nama, idPegawai, tanggal }, 15000);
 }
 
+export async function getAbsensiByDate(params: { tanggal?: string; outlet?: string; search?: string } = {}) {
+  return gasGet(
+    'getAbsensiByDate',
+    {
+      tanggal: params.tanggal,
+      outlet: params.outlet,
+      search: params.search,
+      ownerToken: getOwnerToken()
+    },
+    20000
+  );
+}
+
+export async function updateAbsensi(data: {
+  rowIndex: number;
+  jamDatang?: string;
+  jamPulang?: string;
+  status?: string;
+  keteranganDatang?: string;
+  keteranganPulang?: string;
+  alasanKoreksi: string;
+}) {
+  return gasPost('updateAbsensi', data, true, 20000);
+}
+
+export async function deleteAbsensi(data: { rowIndex: number; alasanHapus: string }) {
+  return gasPost('deleteAbsensi', data, true, 20000);
+}
+
+export async function addManualAbsensi(data: {
+  tanggal: string;
+  nama: string;
+  idPegawai?: string;
+  outlet: string;
+  posisi: string;
+  jamDatang: string;
+  jamPulang?: string;
+  status?: string;
+  keteranganDatang?: string;
+  keteranganPulang?: string;
+  alasanManual: string;
+}) {
+  return gasPost('addManualAbsensi', data, true, 20000);
+}

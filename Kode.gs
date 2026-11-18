@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-11-16-v2.9.0-dynamic-schedule";
+const BACKEND_VERSION = "2026-11-18-v2.9.1-koreksi-absensi";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -47,7 +47,9 @@ function getDeploymentInfo() {
       "dataKetidakhadiran",
       "jadwalHarian",
       "snapshotAbsensi",
-      "getEffectiveWorkAssignment"
+      "getEffectiveWorkAssignment",
+      "koreksiAbsensiManual",
+      "auditTrail"
     ]
   };
 }
@@ -80,6 +82,13 @@ function doGet(e) {
       result = getKehadiranHarian(e.parameter.tanggal);
     } else if (action === 'getKetidakhadiran') {
       result = getKetidakhadiran(e.parameter.tanggal, e.parameter.bulan, e.parameter.nama, e.parameter.outlet);
+    } else if (action === 'getAbsensiByDate') {
+      result = getAbsensiByDate(
+        e.parameter.tanggal,
+        e.parameter.outlet,
+        e.parameter.search,
+        e.parameter.ownerToken || e.parameter.token
+      );
     } else if (action === 'getRiwayat') {
       result = getRiwayat(e.parameter.nama);
     } else if (action === 'getRingkasanHarian') {
@@ -146,6 +155,12 @@ function doPost(e) {
       result = cancelKetidakhadiran(payload.data, ownerToken);
     } else if (action === 'closeDailyAttendance') {
       result = closeDailyAttendance(payload.data, ownerToken);
+    } else if (action === 'updateAbsensi') {
+      result = updateAbsensi(payload.data, ownerToken);
+    } else if (action === 'deleteAbsensi') {
+      result = deleteAbsensi(payload.data, ownerToken);
+    } else if (action === 'addManualAbsensi') {
+      result = addManualAbsensi(payload.data, ownerToken);
     } else {
       result = { status: 'error', message: 'Aksi POST tidak valid', backendVersion: BACKEND_VERSION };
     }
@@ -194,6 +209,15 @@ function getJakartaTimestampStr(dateObj) {
   const d = dateObj || new Date();
   try {
     return Utilities.formatDate(d, "Asia/Jakarta", "yyyy-MM-dd HH:mm:ss");
+  } catch (e) {
+    return d.toISOString();
+  }
+}
+
+function getJakartaIsoTimestampStr(dateObj) {
+  const d = dateObj || new Date();
+  try {
+    return Utilities.formatDate(d, "Asia/Jakarta", "yyyy-MM-dd HH:mm:ss").replace(" ", "T") + "+07:00";
   } catch (e) {
     return d.toISOString();
   }
@@ -1254,8 +1278,9 @@ function checkHasDatangOnDate(ss, emp, targetDmy) {
   const values = sheetData.getDataRange().getValues();
   const displayValues = sheetData.getDataRange().getDisplayValues();
   for (let i = 1; i < values.length; i++) {
+    const statusMasuk = String(values[i][7] || "").trim().toUpperCase();
     const rowTanggal = toDmy(displayValues[i] && displayValues[i][0] ? displayValues[i][0] : values[i][0]);
-    if (rowTanggal === targetDmy && normalizeTextKey(values[i][1]) === normalizeTextKey(emp.nama) && values[i][7] !== "IZIN") {
+    if (rowTanggal === targetDmy && normalizeTextKey(values[i][1]) === normalizeTextKey(emp.nama) && statusMasuk !== "IZIN" && statusMasuk !== "DIBATALKAN") {
       const jamDatang = parseSheetTime(displayValues[i] ? displayValues[i][4] : values[i][4]);
       if (jamDatang && jamDatang !== "-") return true;
     }
@@ -2102,7 +2127,8 @@ function computeKehadiranHarianInternal(targetDmy, ctx) {
     if (rowDate !== targetDmy) continue;
 
     const nama = String(absValues[i][1] || "").trim();
-    if (!nama) continue;
+    const statusMasukRaw = String(absValues[i][7] || "").trim();
+    if (!nama || statusMasukRaw.toUpperCase() === "DIBATALKAN") continue;
     const key = normalizeTextKey(nama);
     const jamDatangParsed = (absDisplay[i] && absDisplay[i][4] && absDisplay[i][4] !== "-")
       ? parseSheetTime(absDisplay[i][4])
@@ -2119,7 +2145,7 @@ function computeKehadiranHarianInternal(targetDmy, ctx) {
       jamDatang: jamDatangParsed,
       jamPulang: jamPulangParsed,
       totalJam: absValues[i][6] || "-",
-      statusMasuk: String(absValues[i][7] || "").trim(),
+      statusMasuk: statusMasukRaw,
       statusPulang: String(absValues[i][8] || "").trim(),
       lokasiDatang: absValues[i][9] || "",
       lokasiPulang: absValues[i][10] || "",
@@ -2426,7 +2452,8 @@ function processForm(data) {
       for (let i = 1; i < dataRange.length; i++) { 
         const rowTanggal = parseSheetDate(dataRange[i][0]);
         const rowJamPulang = parseSheetTime(displayRange[i] ? displayRange[i][5] : dataRange[i][5]);
-        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN" && rowJamPulang === "-") { 
+        const rowSts = String(dataRange[i][7] || "").trim().toUpperCase();
+        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && rowSts !== "IZIN" && rowSts !== "DIBATALKAN" && rowJamPulang === "-") { 
           userRowIndex = i + 1;
           break;
         }
@@ -2436,7 +2463,8 @@ function processForm(data) {
         for (let i = 1; i < dataRange.length; i++) {
           const rowTanggal = parseSheetDate(dataRange[i][0]);
           const rowJamPulang = parseSheetTime(displayRange[i] ? displayRange[i][5] : dataRange[i][5]);
-          if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN" && rowJamPulang === "-") {
+          const rowSts = String(dataRange[i][7] || "").trim().toUpperCase();
+          if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && rowSts !== "IZIN" && rowSts !== "DIBATALKAN" && rowJamPulang === "-") {
             userRowIndex = i + 1;
             break;
           }
@@ -2445,7 +2473,8 @@ function processForm(data) {
     } else {
       for (let i = 1; i < dataRange.length; i++) { 
         const rowTanggal = parseSheetDate(dataRange[i][0]);
-        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && dataRange[i][7] !== "IZIN") { 
+        const rowSts = String(dataRange[i][7] || "").trim().toUpperCase();
+        if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][3] == data.outlet && rowSts !== "IZIN" && rowSts !== "DIBATALKAN") { 
           userRowIndex = i + 1;
           break;
         }
@@ -2560,7 +2589,8 @@ function processForm(data) {
         for (let i = 1; i < dataRange.length; i++) {
           const rowTanggal = parseSheetDate(dataRange[i][0]);
           const rowJamPulang = parseSheetTime(displayRange[i] ? displayRange[i][5] : dataRange[i][5]);
-          if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && dataRange[i][7] !== "IZIN" && rowJamPulang !== "-") {
+          const rowSts = String(dataRange[i][7] || "").trim().toUpperCase();
+          if (rowTanggal == tanggalStr && dataRange[i][1] == data.nama && rowSts !== "IZIN" && rowSts !== "DIBATALKAN" && rowJamPulang !== "-") {
             sudahPernahPulang = true;
             break;
           }
@@ -2883,6 +2913,8 @@ function getRiwayat(nama) {
   // Baris terbaru ada di row 2 (paling atas), jadi loop dari atas ke bawah
   // supaya "riwayat" tetap terurut dari yang terbaru.
   for (let i = 1; i < values.length; i++) {
+    const rowSts = String(values[i][7] || "").trim().toUpperCase();
+    if (!values[i][1] || rowSts === "DIBATALKAN") continue;
     if (values[i][1] === nama) {
       const jamDatangParsed = (displayValues[i] && displayValues[i][4] && displayValues[i][4] !== "-") 
         ? parseSheetTime(displayValues[i][4]) 
@@ -2927,6 +2959,8 @@ function getRingkasanHarian(paramTanggal) {
     const values = sheet.getDataRange().getValues();
     const displayValues = sheet.getDataRange().getDisplayValues();
     for (let i = 1; i < values.length; i++) {
+      const rowSts = String(values[i][7] || "").trim().toUpperCase();
+      if (!values[i][1] || rowSts === "DIBATALKAN") continue;
       const rawVal = displayValues[i] && displayValues[i][0] ? displayValues[i][0] : values[i][0];
       const rowDate = normalizeDateStr(parseSheetDate(rawVal));
 
@@ -2989,6 +3023,8 @@ function getLaporanBulanan(bulan) {
   const outletMap = {};
 
   for (let i = 1; i < values.length; i++) {
+    const rowSts = String(values[i][7] || "").trim().toUpperCase();
+    if (!values[i][1] || rowSts === "DIBATALKAN") continue;
     const tgl = parseSheetDate(values[i][0]); 
     if (mmFilter && !tgl.includes(mmFilter)) {
       continue;
@@ -3125,6 +3161,8 @@ function getRiwayatBulan(nama, bulan) {
   
   const riwayat = [];
   for (let i = 1; i < values.length; i++) {
+    const rowSts = String(values[i][7] || "").trim().toUpperCase();
+    if (!values[i][1] || rowSts === "DIBATALKAN") continue;
     const tgl = parseSheetDate(values[i][0]); 
     if (values[i][1] === nama && tgl.includes(mmFilter)) {
       const jamDatangParsed = (displayValues[i] && displayValues[i][4] && displayValues[i][4] !== "-") 
@@ -3156,6 +3194,717 @@ function getRiwayatBulan(nama, bulan) {
   
   // Data di sheet sudah terurut dari row 2 (terbaru) ke bawah, sehingga tidak perlu di-reverse
   return { status: "success", data: riwayat, backendVersion: BACKEND_VERSION };
+}
+
+// ==================== KOREKSI ABSENSI MANUAL & AUDIT TRAIL ====================
+
+function ensureAuditColumns(sheet) {
+  if (!sheet) return;
+  const headerP = String(sheet.getRange(1, 16).getValue() || "").trim();
+  const headerQ = String(sheet.getRange(1, 17).getValue() || "").trim();
+  const headerR = String(sheet.getRange(1, 18).getValue() || "").trim();
+  if (headerP !== "EditedBy") sheet.getRange(1, 16).setValue("EditedBy");
+  if (headerQ !== "EditedAt") sheet.getRange(1, 17).setValue("EditedAt");
+  if (headerR !== "OriginalSnapshot") sheet.getRange(1, 18).setValue("OriginalSnapshot");
+}
+
+function normalizeStatusMasukInput(rawStatus) {
+  if (!rawStatus) return "";
+  const s = String(rawStatus).trim().toUpperCase();
+  if (s === "AUTO") return "AUTO";
+  if (s === "TEPAT_WAKTU" || s === "TEPAT WAKTU") return "TEPAT WAKTU";
+  if (s === "TELAT") return "TELAT";
+  if (s === "IZIN") return "IZIN";
+  if (s === "DIBATALKAN") return "DIBATALKAN";
+  return s;
+}
+
+function getPulangDisplayLabel(jamPulang, statusPulang) {
+  if (!jamPulang || jamPulang === "-") return "BELUM PULANG";
+  const sp = String(statusPulang || "").trim().toUpperCase();
+  if (sp === "NORMAL" || sp === "PULANG_NORMAL" || sp === "PULANG NORMAL" || sp === "-" || sp === "") return "PULANG NORMAL";
+  if (sp === "PULANG_CEPAT" || sp === "PULANG CEPAT") return "PULANG CEPAT";
+  return sp;
+}
+
+function resolveTargetHoursForRow(ss, tanggalDmy, nama, outlet, posisi) {
+  const toleransiTelat = getToleransiTelat();
+  let jamMasukTarget = getJamMasukPosisi(posisi || "Admin");
+  let jamPulangTarget = getJamPulangPosisi(posisi || "Admin");
+  let sumberTarget = "DATA_POSISI";
+
+  try {
+    const snapRows = readAllSnapshotRows(ss);
+    const snap = snapRows.find(function(s) {
+      return s.tanggal === tanggalDmy &&
+        normalizeTextKey(s.nama) === normalizeTextKey(nama) &&
+        (!outlet || outlet === "-" || normalizeOutletKey(s.outlet) === normalizeOutletKey(outlet));
+    }) || snapRows.find(function(s) {
+      return s.tanggal === tanggalDmy && normalizeTextKey(s.nama) === normalizeTextKey(nama);
+    });
+
+    if (snap) {
+      if (isValidHHMM(snap.jamMasukEfektif)) jamMasukTarget = snap.jamMasukEfektif;
+      if (isValidHHMM(snap.jamPulangEfektif)) jamPulangTarget = snap.jamPulangEfektif;
+      sumberTarget = "SNAPSHOT_ABSENSI";
+      return {
+        jamMasukTarget: jamMasukTarget,
+        jamPulangTarget: jamPulangTarget,
+        toleransiTelat: toleransiTelat,
+        sumberTarget: sumberTarget
+      };
+    }
+
+    const ctx = buildAssignmentContext(ss, tanggalDmy);
+    const emp = findEmployeeInList(ctx.employees, nama, nama);
+    if (emp) {
+      const eff = getEffectiveWorkAssignment(emp.idPegawai || emp.nama, tanggalDmy, ctx);
+      if (eff && (!posisi || normalizeTextKey(eff.posisiPenugasan) === normalizeTextKey(posisi))) {
+        if (isValidHHMM(eff.jamMasukEfektif)) jamMasukTarget = eff.jamMasukEfektif;
+        if (isValidHHMM(eff.jamPulangEfektif)) jamPulangTarget = eff.jamPulangEfektif;
+        sumberTarget = eff.sumberJadwal || "DATA_POSISI";
+      }
+    }
+  } catch (e) {}
+
+  return {
+    jamMasukTarget: jamMasukTarget,
+    jamPulangTarget: jamPulangTarget,
+    toleransiTelat: toleransiTelat,
+    sumberTarget: sumberTarget
+  };
+}
+
+function recalculateAttendanceStatus(jamDatang, jamPulang, jamMasukTarget, jamPulangTarget, toleransiTelat) {
+  const cleanDatang = parseSheetTime(jamDatang);
+  const cleanPulang = parseSheetTime(jamPulang);
+  const targetIn = isValidHHMM(jamMasukTarget) ? jamMasukTarget : "08:00";
+  const targetOut = isValidHHMM(jamPulangTarget) ? jamPulangTarget : "20:00";
+  const tol = (typeof toleransiTelat === "number" && !isNaN(toleransiTelat)) ? toleransiTelat : 60;
+
+  let statusMasuk = "TEPAT WAKTU";
+  let statusMasukCode = "TEPAT_WAKTU";
+  if (cleanDatang && cleanDatang !== "-") {
+    const datangMin = timeStrToMinutes(cleanDatang);
+    const targetInMin = timeStrToMinutes(targetIn);
+    if (datangMin <= targetInMin + tol) {
+      statusMasuk = "TEPAT WAKTU";
+      statusMasukCode = "TEPAT_WAKTU";
+    } else {
+      statusMasuk = "TELAT";
+      statusMasukCode = "TELAT";
+    }
+  }
+
+  if (!cleanPulang || cleanPulang === "-") {
+    return {
+      invalidOrder: false,
+      jamDatang: cleanDatang,
+      jamPulang: "-",
+      totalJam: "-",
+      totalMenit: 0,
+      statusMasuk: statusMasuk,
+      statusMasukCode: statusMasukCode,
+      statusPulang: "-",
+      statusPulangCode: "BELUM_PULANG",
+      statusPulangLabel: "BELUM PULANG"
+    };
+  }
+
+  const datangMin = (cleanDatang && cleanDatang !== "-") ? timeStrToMinutes(cleanDatang) : 0;
+  const pulangMin = timeStrToMinutes(cleanPulang);
+  if (cleanDatang && cleanDatang !== "-" && pulangMin < datangMin) {
+    return {
+      invalidOrder: true,
+      jamDatang: cleanDatang,
+      jamPulang: cleanPulang,
+      totalJam: "-",
+      totalMenit: 0,
+      statusMasuk: statusMasuk,
+      statusMasukCode: statusMasukCode,
+      statusPulang: "-",
+      statusPulangCode: "INVALID",
+      statusPulangLabel: "INVALID"
+    };
+  }
+
+  const diffMin = (cleanDatang && cleanDatang !== "-") ? Math.max(0, pulangMin - datangMin) : 0;
+  const rH = Math.floor(diffMin / 60);
+  const rM = diffMin % 60;
+  const totalJam = (cleanDatang && cleanDatang !== "-") ? (rH + "j " + rM + "m") : "-";
+
+  const targetOutMin = timeStrToMinutes(targetOut);
+  let statusPulang = "NORMAL";
+  let statusPulangCode = "PULANG_NORMAL";
+  let statusPulangLabel = "PULANG NORMAL";
+
+  if (rH >= 13) {
+    statusPulang = "LEMBUR";
+    statusPulangCode = "LEMBUR";
+    statusPulangLabel = "LEMBUR";
+  } else if (pulangMin < targetOutMin) {
+    statusPulang = "PULANG CEPAT";
+    statusPulangCode = "PULANG_CEPAT";
+    statusPulangLabel = "PULANG CEPAT";
+  }
+
+  return {
+    invalidOrder: false,
+    jamDatang: cleanDatang,
+    jamPulang: cleanPulang,
+    totalJam: totalJam,
+    totalMenit: diffMin,
+    statusMasuk: statusMasuk,
+    statusMasukCode: statusMasukCode,
+    statusPulang: statusPulang,
+    statusPulangCode: statusPulangCode,
+    statusPulangLabel: statusPulangLabel
+  };
+}
+
+function logAuditTrail(sheet, rowIndex, oldData, newData, ownerName, action, alasan) {
+  ensureAuditColumns(sheet);
+  const isoNow = getJakartaIsoTimestampStr();
+  let snapshotValue = "MANUAL_ENTRY";
+
+  if (action !== "MANUAL_ENTRY") {
+    const auditRecord = {
+      action: action || "UPDATE",
+      alasan: alasan || "",
+      editedBy: ownerName || "Owner",
+      editedAt: isoNow,
+      before: oldData || {},
+      after: newData || {}
+    };
+    if (oldData && oldData.previousOriginalSnapshot) {
+      auditRecord.previousSnapshot = oldData.previousOriginalSnapshot;
+    }
+    snapshotValue = JSON.stringify(auditRecord);
+  }
+
+  sheet.getRange(rowIndex, 16).setValue(ownerName || "Owner");
+  sheet.getRange(rowIndex, 17).setValue(isoNow);
+  sheet.getRange(rowIndex, 18).setValue(snapshotValue);
+  return {
+    editedBy: ownerName || "Owner",
+    editedAt: isoNow,
+    originalSnapshot: snapshotValue
+  };
+}
+
+function getAbsensiByDate(paramTanggal, outletFilter, searchQuery, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName("Data_Absensi");
+  const targetDate = (paramTanggal && String(paramTanggal).trim() !== "")
+    ? normalizeDateStr(String(paramTanggal).trim())
+    : normalizeDateStr(getJakartaDateStr());
+  const normOutletFilter = (outletFilter && outletFilter !== "ALL") ? normalizeOutletKey(outletFilter) : "";
+  const normSearch = searchQuery ? normalizeTextKey(searchQuery) : "";
+
+  const rows = [];
+  if (sheet) {
+    const values = sheet.getDataRange().getValues();
+    const displayValues = sheet.getDataRange().getDisplayValues();
+    for (let i = 1; i < values.length; i++) {
+      const nama = String(values[i][1] || "").trim();
+      if (!nama) continue;
+
+      const rawTgl = (displayValues[i] && displayValues[i][0]) ? displayValues[i][0] : values[i][0];
+      const rowDate = normalizeDateStr(parseSheetDate(rawTgl));
+      if (rowDate !== targetDate) continue;
+
+      const rowOutlet = String(values[i][3] || "").trim();
+      if (normOutletFilter && normalizeOutletKey(rowOutlet) !== normOutletFilter) continue;
+      if (normSearch && normalizeTextKey(nama).indexOf(normSearch) === -1) continue;
+
+      const jamDatangParsed = (displayValues[i] && displayValues[i][4] && displayValues[i][4] !== "-")
+        ? parseSheetTime(displayValues[i][4])
+        : parseSheetTime(values[i][4]);
+      const jamPulangParsed = (displayValues[i] && displayValues[i][5] && displayValues[i][5] !== "-")
+        ? parseSheetTime(displayValues[i][5])
+        : parseSheetTime(values[i][5]);
+
+      const statusMasuk = String(values[i][7] || "").trim() || "-";
+      const statusPulang = String(values[i][8] || "").trim() || "-";
+      const editedBy = String(values[i][15] || "").trim();
+      const editedAt = String(values[i][16] || "").trim();
+      const originalSnapshot = String(values[i][17] || "").trim();
+
+      rows.push({
+        rowIndex: i + 1,
+        tanggal: rowDate,
+        nama: nama,
+        posisi: String(values[i][2] || "").trim(),
+        outlet: rowOutlet || "-",
+        jamDatang: jamDatangParsed,
+        jamPulang: jamPulangParsed,
+        totalJam: String(values[i][6] || "-"),
+        statusMasuk: statusMasuk,
+        statusPulang: statusPulang,
+        statusPulangLabel: getPulangDisplayLabel(jamPulangParsed, statusPulang),
+        lokasiDatang: String(values[i][9] || "-"),
+        lokasiPulang: String(values[i][10] || "-"),
+        fotoDatang: String(values[i][11] || ""),
+        fotoPulang: String(values[i][12] || ""),
+        keteranganDatang: String(values[i][13] || "-"),
+        keteranganPulang: String(values[i][14] || "-"),
+        editedBy: editedBy,
+        editedAt: editedAt,
+        originalSnapshot: originalSnapshot,
+        isCancelled: statusMasuk.toUpperCase() === "DIBATALKAN"
+      });
+    }
+  }
+
+  return {
+    status: "success",
+    tanggal: targetDate,
+    data: rows,
+    employees: getActiveEmployeesSafe(ss),
+    outlets: getOutlets(),
+    positions: getSettings().data.positions,
+    toleransiTelat: getToleransiTelat(),
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function updateAbsensi(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName("Data_Absensi");
+    if (!sheet) {
+      return { status: "error", message: "Sheet Data_Absensi tidak ditemukan.", backendVersion: BACKEND_VERSION };
+    }
+    ensureAuditColumns(sheet);
+
+    const rowIndex = parseInt(data && data.rowIndex, 10);
+    if (!rowIndex || isNaN(rowIndex) || rowIndex < 2 || rowIndex > sheet.getLastRow()) {
+      return { status: "error", message: "rowIndex absensi tidak valid.", backendVersion: BACKEND_VERSION };
+    }
+
+    const cleanAlasan = data && data.alasanKoreksi ? String(data.alasanKoreksi).trim() : "";
+    if (!cleanAlasan) {
+      return { status: "error", message: "Alasan koreksi wajib diisi.", backendVersion: BACKEND_VERSION };
+    }
+
+    const rowVals = sheet.getRange(rowIndex, 1, 1, 18).getValues()[0];
+    const rowDisp = sheet.getRange(rowIndex, 1, 1, 18).getDisplayValues()[0];
+
+    const oldNama = String(rowVals[1] || "").trim();
+    const oldStatusMasuk = String(rowVals[7] || "").trim();
+    if (!oldNama) {
+      return { status: "error", message: "Baris absensi kosong atau tidak ditemukan.", backendVersion: BACKEND_VERSION };
+    }
+    if (oldStatusMasuk.toUpperCase() === "DIBATALKAN") {
+      return { status: "error", message: "Baris absensi sudah dibatalkan sebelumnya.", backendVersion: BACKEND_VERSION };
+    }
+
+    const oldTanggal = normalizeDateStr(parseSheetDate(rowDisp[0] || rowVals[0]));
+    const oldPosisi = String(rowVals[2] || "").trim();
+    const oldOutlet = String(rowVals[3] || "").trim();
+    const oldJamDatang = parseSheetTime(rowDisp[4] && rowDisp[4] !== "-" ? rowDisp[4] : rowVals[4]);
+    const oldJamPulang = parseSheetTime(rowDisp[5] && rowDisp[5] !== "-" ? rowDisp[5] : rowVals[5]);
+    const oldTotalJam = String(rowVals[6] || "-");
+    const oldStatusPulang = String(rowVals[8] || "-").trim() || "-";
+    const oldKetDatang = String(rowVals[13] || "-");
+    const oldKetPulang = String(rowVals[14] || "-");
+    const prevEditedBy = String(rowVals[15] || "").trim();
+    const prevEditedAt = String(rowVals[16] || "").trim();
+    const prevOriginalSnapshot = String(rowVals[17] || "").trim();
+
+    let newJamDatang = oldJamDatang;
+    if (data.jamDatang !== undefined) {
+      const jdRaw = String(data.jamDatang || "").trim();
+      if (!jdRaw || jdRaw === "-") {
+        newJamDatang = "-";
+      } else {
+        const parsedJd = parseSheetTime(jdRaw);
+        if (!isValidHHMM(parsedJd)) {
+          return { status: "error", message: "Format Jam Datang harus HH:MM.", backendVersion: BACKEND_VERSION };
+        }
+        newJamDatang = parsedJd;
+      }
+    }
+
+    let newJamPulang = oldJamPulang;
+    if (data.jamPulang !== undefined) {
+      const jpRaw = String(data.jamPulang || "").trim();
+      if (!jpRaw || jpRaw === "-") {
+        newJamPulang = "-";
+      } else {
+        const parsedJp = parseSheetTime(jpRaw);
+        if (!isValidHHMM(parsedJp)) {
+          return { status: "error", message: "Format Jam Pulang harus HH:MM.", backendVersion: BACKEND_VERSION };
+        }
+        newJamPulang = parsedJp;
+      }
+    }
+
+    if (newJamPulang !== "-" && (!newJamDatang || newJamDatang === "-")) {
+      return { status: "error", message: "Jam Pulang tidak dapat diisi jika Jam Datang masih kosong.", backendVersion: BACKEND_VERSION };
+    }
+
+    const targets = resolveTargetHoursForRow(ss, oldTanggal, oldNama, oldOutlet, oldPosisi);
+    const recalc = recalculateAttendanceStatus(
+      newJamDatang,
+      newJamPulang,
+      targets.jamMasukTarget,
+      targets.jamPulangTarget,
+      targets.toleransiTelat
+    );
+
+    if (recalc.invalidOrder) {
+      return { status: "error", message: "Jam Pulang (" + newJamPulang + ") tidak boleh lebih awal dari Jam Datang (" + newJamDatang + ").", backendVersion: BACKEND_VERSION };
+    }
+
+    const requestedStatus = normalizeStatusMasukInput(data.status);
+    let finalStatusMasuk = oldStatusMasuk;
+    if (requestedStatus && requestedStatus !== "AUTO") {
+      if (requestedStatus === oldStatusMasuk && newJamDatang !== oldJamDatang && newJamDatang !== "-" && oldStatusMasuk !== "IZIN") {
+        finalStatusMasuk = recalc.statusMasuk;
+      } else {
+        finalStatusMasuk = requestedStatus;
+      }
+    } else if (newJamDatang !== "-" && oldStatusMasuk !== "IZIN") {
+      finalStatusMasuk = recalc.statusMasuk;
+    }
+
+    const finalTotalJam = (finalStatusMasuk === "IZIN") ? "-" : recalc.totalJam;
+    const finalStatusPulang = (finalStatusMasuk === "IZIN") ? "-" : recalc.statusPulang;
+    const finalKetDatang = (data.keteranganDatang !== undefined)
+      ? (String(data.keteranganDatang || "").trim() || "-")
+      : oldKetDatang;
+    const finalKetPulang = (data.keteranganPulang !== undefined)
+      ? (String(data.keteranganPulang || "").trim() || "-")
+      : oldKetPulang;
+
+    const oldData = {
+      tanggal: oldTanggal,
+      nama: oldNama,
+      posisi: oldPosisi,
+      outlet: oldOutlet,
+      jamDatang: oldJamDatang,
+      jamPulang: oldJamPulang,
+      totalJam: oldTotalJam,
+      statusMasuk: oldStatusMasuk,
+      statusPulang: oldStatusPulang,
+      keteranganDatang: oldKetDatang,
+      keteranganPulang: oldKetPulang,
+      previousEditedBy: prevEditedBy,
+      previousEditedAt: prevEditedAt,
+      previousOriginalSnapshot: prevOriginalSnapshot
+    };
+
+    const newData = {
+      jamDatang: newJamDatang,
+      jamPulang: newJamPulang,
+      totalJam: finalTotalJam,
+      statusMasuk: finalStatusMasuk,
+      statusPulang: finalStatusPulang,
+      statusPulangLabel: getPulangDisplayLabel(newJamPulang, finalStatusPulang),
+      keteranganDatang: finalKetDatang,
+      keteranganPulang: finalKetPulang
+    };
+
+    sheet.getRange(rowIndex, 5).setValue(newJamDatang);
+    sheet.getRange(rowIndex, 6).setValue(newJamPulang);
+    sheet.getRange(rowIndex, 7).setValue(finalTotalJam);
+    sheet.getRange(rowIndex, 8).setValue(finalStatusMasuk);
+    sheet.getRange(rowIndex, 9).setValue(finalStatusPulang);
+    sheet.getRange(rowIndex, 14).setValue(finalKetDatang);
+    sheet.getRange(rowIndex, 15).setValue(finalKetPulang);
+
+    const audit = logAuditTrail(sheet, rowIndex, oldData, newData, auth.ownerName, "UPDATE", cleanAlasan);
+
+    return {
+      status: "success",
+      message: "Koreksi absensi untuk " + oldNama + " berhasil disimpan.",
+      data: {
+        rowIndex: rowIndex,
+        tanggal: oldTanggal,
+        nama: oldNama,
+        posisi: oldPosisi,
+        outlet: oldOutlet,
+        jamDatang: newJamDatang,
+        jamPulang: newJamPulang,
+        totalJam: finalTotalJam,
+        statusMasuk: finalStatusMasuk,
+        statusPulang: finalStatusPulang,
+        statusPulangLabel: getPulangDisplayLabel(newJamPulang, finalStatusPulang),
+        keteranganDatang: finalKetDatang,
+        keteranganPulang: finalKetPulang,
+        editedBy: audit.editedBy,
+        editedAt: audit.editedAt,
+        originalSnapshot: audit.originalSnapshot,
+        isCancelled: false
+      },
+      backendVersion: BACKEND_VERSION
+    };
+  } catch (err) {
+    return { status: "error", message: "Gagal memperbarui absensi: " + (err.message || err.toString()), backendVersion: BACKEND_VERSION };
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+}
+
+function deleteAbsensi(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName("Data_Absensi");
+    if (!sheet) {
+      return { status: "error", message: "Sheet Data_Absensi tidak ditemukan.", backendVersion: BACKEND_VERSION };
+    }
+    ensureAuditColumns(sheet);
+
+    const rowIndex = parseInt(data && data.rowIndex, 10);
+    if (!rowIndex || isNaN(rowIndex) || rowIndex < 2 || rowIndex > sheet.getLastRow()) {
+      return { status: "error", message: "rowIndex absensi tidak valid.", backendVersion: BACKEND_VERSION };
+    }
+
+    const cleanAlasan = data && data.alasanHapus ? String(data.alasanHapus).trim() : "";
+    if (!cleanAlasan) {
+      return { status: "error", message: "Alasan penghapusan absensi wajib diisi.", backendVersion: BACKEND_VERSION };
+    }
+
+    const rowVals = sheet.getRange(rowIndex, 1, 1, 18).getValues()[0];
+    const rowDisp = sheet.getRange(rowIndex, 1, 1, 18).getDisplayValues()[0];
+    const oldNama = String(rowVals[1] || "").trim();
+    const oldStatusMasuk = String(rowVals[7] || "").trim();
+
+    if (!oldNama) {
+      return { status: "error", message: "Baris absensi tidak ditemukan.", backendVersion: BACKEND_VERSION };
+    }
+    if (oldStatusMasuk.toUpperCase() === "DIBATALKAN") {
+      return { status: "error", message: "Baris absensi sudah berstatus DIBATALKAN.", backendVersion: BACKEND_VERSION };
+    }
+
+    const oldData = {
+      tanggal: normalizeDateStr(parseSheetDate(rowDisp[0] || rowVals[0])),
+      nama: oldNama,
+      posisi: String(rowVals[2] || "").trim(),
+      outlet: String(rowVals[3] || "").trim(),
+      jamDatang: parseSheetTime(rowDisp[4] && rowDisp[4] !== "-" ? rowDisp[4] : rowVals[4]),
+      jamPulang: parseSheetTime(rowDisp[5] && rowDisp[5] !== "-" ? rowDisp[5] : rowVals[5]),
+      totalJam: String(rowVals[6] || "-"),
+      statusMasuk: oldStatusMasuk,
+      statusPulang: String(rowVals[8] || "-"),
+      keteranganDatang: String(rowVals[13] || "-"),
+      keteranganPulang: String(rowVals[14] || "-"),
+      previousOriginalSnapshot: String(rowVals[17] || "").trim()
+    };
+
+    sheet.getRange(rowIndex, 8).setValue("DIBATALKAN");
+    sheet.getRange(rowIndex, 15).setValue("Dibatalkan Owner: " + cleanAlasan);
+    const audit = logAuditTrail(sheet, rowIndex, oldData, { statusMasuk: "DIBATALKAN" }, auth.ownerName, "DELETE", cleanAlasan);
+
+    return {
+      status: "success",
+      message: "Absensi " + oldNama + " berhasil ditandai DIBATALKAN.",
+      rowIndex: rowIndex,
+      editedBy: audit.editedBy,
+      editedAt: audit.editedAt,
+      backendVersion: BACKEND_VERSION
+    };
+  } catch (err) {
+    return { status: "error", message: "Gagal membatalkan absensi: " + (err.message || err.toString()), backendVersion: BACKEND_VERSION };
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+}
+
+function addManualAbsensi(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName("Data_Absensi");
+    if (!sheet) {
+      return { status: "error", message: "Sheet Data_Absensi tidak ditemukan.", backendVersion: BACKEND_VERSION };
+    }
+    ensureAuditColumns(sheet);
+
+    const targetYmd = toYmd(data && data.tanggal);
+    const todayYmd = toYmd(getJakartaDateStr());
+    if (!targetYmd) {
+      return { status: "error", message: "Tanggal absensi manual tidak valid.", backendVersion: BACKEND_VERSION };
+    }
+    if (todayYmd && targetYmd > todayYmd) {
+      return { status: "error", message: "Tanggal absensi manual tidak boleh di masa depan.", backendVersion: BACKEND_VERSION };
+    }
+    const targetDmy = toDmy(targetYmd);
+
+    const cleanAlasanManual = data && data.alasanManual ? String(data.alasanManual).trim() : "";
+    if (!cleanAlasanManual) {
+      return { status: "error", message: "Alasan penambahan absensi manual wajib diisi.", backendVersion: BACKEND_VERSION };
+    }
+
+    const employees = getActiveEmployeesSafe(ss);
+    const emp = findEmployeeInList(employees, (data && data.idPegawai) || (data && data.nama), data && data.nama);
+    if (!emp) {
+      return { status: "error", message: "Pegawai tidak ditemukan atau berstatus nonaktif di DataPegawai.", backendVersion: BACKEND_VERSION };
+    }
+    if (emp.duplicateName && !emp.idPegawai && !(data && data.idPegawai)) {
+      return { status: "error", message: "Nama pegawai duplikat & ID Pegawai kosong. Lengkapi ID Pegawai terlebih dahulu.", backendVersion: BACKEND_VERSION };
+    }
+
+    const outlets = getOutlets();
+    const rawOutlet = data && data.outlet ? String(data.outlet).trim() : "";
+    const matchedOutlet = outlets.find(function(o) { return normalizeOutletKey(o.nama) === normalizeOutletKey(rawOutlet); });
+    if (!matchedOutlet) {
+      return { status: "error", message: "Outlet \"" + rawOutlet + "\" tidak ditemukan di DataOutlet.", backendVersion: BACKEND_VERSION };
+    }
+    const canonicalOutlet = matchedOutlet.nama;
+
+    const positionsMap = getPositionsMap(ss);
+    const rawPosisi = data && data.posisi ? String(data.posisi).trim() : "";
+    const posCfg = positionsMap[normalizeTextKey(rawPosisi)];
+    const canonicalPosisi = posCfg ? posCfg.name : rawPosisi;
+    if (!canonicalPosisi) {
+      return { status: "error", message: "Posisi wajib dipilih.", backendVersion: BACKEND_VERSION };
+    }
+
+    const parsedJamDatang = parseSheetTime(data && data.jamDatang);
+    if (!isValidHHMM(parsedJamDatang)) {
+      return { status: "error", message: "Jam Datang wajib diisi dengan format HH:MM.", backendVersion: BACKEND_VERSION };
+    }
+
+    let parsedJamPulang = "-";
+    if (data && data.jamPulang && String(data.jamPulang).trim() !== "" && String(data.jamPulang).trim() !== "-") {
+      parsedJamPulang = parseSheetTime(data.jamPulang);
+      if (!isValidHHMM(parsedJamPulang)) {
+        return { status: "error", message: "Format Jam Pulang harus HH:MM.", backendVersion: BACKEND_VERSION };
+      }
+    }
+
+    // Cek apakah sudah ada absensi DATANG aktif untuk pegawai tersebut di tanggal yang sama
+    const dataVals = sheet.getDataRange().getValues();
+    const dispVals = sheet.getDataRange().getDisplayValues();
+    for (let i = 1; i < dataVals.length; i++) {
+      const rowTgl = normalizeDateStr(parseSheetDate(dispVals[i] && dispVals[i][0] ? dispVals[i][0] : dataVals[i][0]));
+      const rowSts = String(dataVals[i][7] || "").trim().toUpperCase();
+      const rowJd = parseSheetTime(dispVals[i] && dispVals[i][4] !== "-" ? dispVals[i][4] : dataVals[i][4]);
+      if (rowTgl === targetDmy && normalizeTextKey(dataVals[i][1]) === normalizeTextKey(emp.nama) && rowSts !== "IZIN" && rowSts !== "DIBATALKAN" && rowJd !== "-") {
+        return {
+          status: "error",
+          message: emp.nama + " sudah memiliki absensi DATANG aktif pada tanggal " + targetDmy + ". Gunakan menu Edit pada baris terkait.",
+          backendVersion: BACKEND_VERSION
+        };
+      }
+    }
+
+    const targets = resolveTargetHoursForRow(ss, targetDmy, emp.nama, canonicalOutlet, canonicalPosisi);
+    const recalc = recalculateAttendanceStatus(
+      parsedJamDatang,
+      parsedJamPulang,
+      targets.jamMasukTarget,
+      targets.jamPulangTarget,
+      targets.toleransiTelat
+    );
+
+    if (recalc.invalidOrder) {
+      return { status: "error", message: "Jam Pulang (" + parsedJamPulang + ") tidak boleh lebih awal dari Jam Datang (" + parsedJamDatang + ").", backendVersion: BACKEND_VERSION };
+    }
+
+    const requestedStatus = normalizeStatusMasukInput(data && data.status);
+    const finalStatusMasuk = (requestedStatus && requestedStatus !== "AUTO") ? requestedStatus : recalc.statusMasuk;
+    const ketDatang = (data && data.keteranganDatang && String(data.keteranganDatang).trim()) ? String(data.keteranganDatang).trim() : ("Input Manual: " + cleanAlasanManual);
+    const ketPulang = (data && data.keteranganPulang && String(data.keteranganPulang).trim()) ? String(data.keteranganPulang).trim() : "-";
+    const isoNow = getJakartaIsoTimestampStr();
+
+    prependDataRow(sheet, [
+      targetDmy,                  // A. Tanggal
+      emp.nama,                   // B. Nama
+      canonicalPosisi,            // C. Posisi
+      canonicalOutlet,            // D. Outlet
+      parsedJamDatang,            // E. Jam Datang
+      parsedJamPulang,            // F. Jam Pulang
+      recalc.totalJam,            // G. Total Jam
+      finalStatusMasuk,           // H. Status Masuk
+      recalc.statusPulang,        // I. Status Pulang
+      "MANUAL_ENTRY",             // J. Lokasi Datang
+      parsedJamPulang !== "-" ? "MANUAL_ENTRY" : "-", // K. Lokasi Pulang
+      "",                         // L. Foto Datang
+      "",                         // M. Foto Pulang
+      ketDatang,                  // N. Keterangan Datang
+      ketPulang,                  // O. Keterangan Pulang
+      auth.ownerName || "Owner",  // P. EditedBy
+      isoNow,                     // Q. EditedAt
+      "MANUAL_ENTRY"              // R. OriginalSnapshot
+    ]);
+
+    // Simpan snapshot penugasan target agar koreksi selanjutnya konsisten
+    const snapshotSheet = ensureSnapshotAbsensiSheet(ss);
+    const snapshotKey = targetDmy + "|" + normalizeTextKey(emp.nama) + "|" + normalizeOutletKey(canonicalOutlet) + "|" + parsedJamDatang;
+    prependDataRow(snapshotSheet, [
+      snapshotKey,
+      targetDmy,
+      emp.idPegawai || "",
+      emp.nama,
+      "",
+      canonicalOutlet,
+      canonicalPosisi,
+      canonicalPosisi,
+      targets.jamMasukTarget,
+      targets.jamPulangTarget,
+      "NORMAL",
+      "MANUAL_ENTRY",
+      parsedJamDatang
+    ]);
+
+    return {
+      status: "success",
+      message: "Absensi manual untuk " + emp.nama + " (" + targetDmy + ") berhasil ditambahkan.",
+      rowIndex: 2,
+      data: {
+        rowIndex: 2,
+        tanggal: targetDmy,
+        nama: emp.nama,
+        posisi: canonicalPosisi,
+        outlet: canonicalOutlet,
+        jamDatang: parsedJamDatang,
+        jamPulang: parsedJamPulang,
+        totalJam: recalc.totalJam,
+        statusMasuk: finalStatusMasuk,
+        statusPulang: recalc.statusPulang,
+        statusPulangLabel: getPulangDisplayLabel(parsedJamPulang, recalc.statusPulang),
+        keteranganDatang: ketDatang,
+        keteranganPulang: ketPulang,
+        editedBy: auth.ownerName || "Owner",
+        editedAt: isoNow,
+        originalSnapshot: "MANUAL_ENTRY",
+        isCancelled: false
+      },
+      backendVersion: BACKEND_VERSION
+    };
+  } catch (err) {
+    return { status: "error", message: "Gagal menambahkan absensi manual: " + (err.message || err.toString()), backendVersion: BACKEND_VERSION };
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
 }
 
 /**
