@@ -9,11 +9,11 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.8.0` (Production Stable) |
-| **Terakhir Diperbarui** | 01 Oktober 2026 |
-| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build) |
+| **Versi Saat Ini** | `v2.9.0` (Siap Deploy GAS & Vercel) |
+| **Terakhir Diperbarui** | 16 November 2026 |
+| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, `node scripts/verify-kode-gs.mjs`) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
-| **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `Settings`) + Google Drive API (Foto Selfie & Bukti) |
+| **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `DataPegawai`, `DataOutlet`, `DataPosisi`, `DataPenempatan`, `JadwalHarian`, `DataKetidakhadiran`, `SnapshotAbsensi`, `AbsenIzin`, `Settings`) + Google Drive API |
 | **Environment Target**| Web App (Mobile & Desktop Browser Responsive) |
 
 ---
@@ -70,23 +70,39 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
   - Preview foto selfie datang dan pulang resolusi tinggi.
 
 ### E. Dashboard Owner & Pengaturan
-- [x] **Owner Authentication:** Login terproteksi password (`jntowner`) dengan persistensi sesi di `localStorage`.
+- [x] **Owner Authentication:** Login tervalidasi server via GAS (`ownerLogin`) yang menerbitkan token sesi (`CacheService` + `PropertiesService`) untuk seluruh aksi tulis Owner (`savePenempatan`, `saveJadwalHarian`, `saveKetidakhadiran`, `closeDailyAttendance`, `saveSettings`).
 - [x] **Manajemen Outlet & Koordinat:**
   - Penambahan, pengubahan, dan penghapusan master outlet.
   - Peta interaktif Leaflet untuk memilih titik koordinat latitude/longitude outlet dan mengatur radius toleransi geofencing.
 - [x] **Manajemen Posisi & Jam Kerja:**
-  - Konfigurasi jam masuk dan jam pulang per posisi pegawai (Admin, Kurir, Pickup, dsb).
+  - Konfigurasi jam masuk dan jam pulang per posisi pegawai (Admin, Kurir, Pickup, Magang, dsb).
   - Pengaturan fleksibel posisi aktif/non-aktif.
 - [x] **Sistem Pengaturan Global:**
   - Toggle wajibkan lokasi GPS (`requireLocation`).
-  - Toggle aktifkan toleransi jam kerja (`enableWorkHours`).
-  - Sinkronisasi instan ke sheet `Settings` di backend GAS.
+  - Toggle aktifkan toleransi jam kerja (`enableWorkHours`) & toleransi keterlambatan (`toleransi_telat`).
+  - Sinkronisasi instan ke sheet `Settings` di backend GAS dengan validasi `ownerToken`.
 
 ### F. Integrasi Khusus & Developer Tools
 - [x] **Integrasi Form Feishu:** Tampilan iframe otomatis form Feishu khusus posisi Admin pada outlet tertentu (Pasir Jaha & Jayanti).
 - [x] **Modal Konfigurasi GAS:**
   - Input & validasi URL endpoint Web App Google Apps Script.
   - Tombol **"Salin Kode.gs Lengkap"** dan **"Unduh .gs"** untuk kemudahan redeploy backend.
+- [x] **Timeout & Retry Jaringan:** `fetchWithTimeout` (20 detik GET/POST standar, 35 detik upload foto absen/izin) dengan pesan error `AbortError` ramah pengguna.
+
+### G. Manajemen Kehadiran Seluruh Pegawai (`DataKetidakhadiran`)
+- [x] **Status Kehadiran Lengkap Harian:** Memantau seluruh pegawai `AKTIF` (`HADIR`, `BELUM ABSEN`, `LIBUR`, `IZIN`, `SAKIT`, `ALPA`) di tab `Ringkasan Harian` & `Kehadiran Pegawai`.
+- [x] **Filter Lintas Dimensi:** Filter berdasarkan Tanggal, Outlet, Posisi, Status Kehadiran, dan pencarian Nama Pegawai.
+- [x] **Tutup Hari / Tandai ALPA Otomatis:** Aksi Owner (`closeDailyAttendance`) menandai pegawai `BELUM ABSEN` menjadi `ALPA` pada `DataKetidakhadiran` tanpa membuat baris `DATANG` palsu di `Data_Absensi`.
+- [x] **Sinkronisasi Form Pegawai Anti-Duplikat:** Pengajuan `IZIN`/`SAKIT` pegawai tersinkron ke `DataKetidakhadiran` (master), `AbsenIzin`, dan `Data_Absensi` dengan kunci `[REF:...]` agar tidak dobel saat disubmit ulang pada hari yang sama.
+
+### H. Manajemen Penempatan Pegawai (`DataPenempatan`)
+- [x] **Penempatan Permanen Berbasis Riwayat:** Owner dapat mengatur Outlet, Posisi, Jam Masuk, Jam Pulang, dan Hari Kerja per individu (`Manajemen Pegawai`). Perubahan baru otomatis menutup baris lama (`Tanggal Akhir = H-1`) tanpa menghapus histori.
+- [x] **Perlindungan Data Sensitif:** `getActiveEmployeesSafe()` tidak pernah mengekspos `password`, `SidikWajah`, maupun `FaceDescriptor`.
+
+### I. Jadwal Dinamis, Admin Backup & Rotasi Outlet (`JadwalHarian` + `SnapshotAbsensi`)
+- [x] **Override Harian Tanpa Mengubah Penempatan Permanen:** Sheet `JadwalHarian` (`NORMAL`, `BACKUP`, `ROTASI`, `PENGGANTI`; status `DIJADWALKAN`, `LIBUR`, `DIBATALKAN`) memungkinkan Pickup/Magang ditugaskan sebagai **Admin Backup** sementara tanpa mengubah posisi permanen di `DataPenempatan`.
+- [x] **Deteksi Bentrok & Kesiapan Outlet:** Penolakan otomatis jadwal ganda bentrok jam pada tanggal yang sama, konfirmasi khusus saat `LIBUR` bertabrakan dengan `DATANG`/`IZIN`/`SAKIT`, serta alert kesiapan Admin per outlet (`NO_ADMIN`, `ADMIN_ABSENT_NO_BACKUP`, `SCHEDULE_IZIN_CONFLICT`).
+- [x] **Snapshot Penugasan Saat `DATANG` (`SnapshotAbsensi`):** Penugasan efektif saat `DATANG` dibekukan untuk validasi `PULANG` sehingga perubahan jadwal setelah `DATANG` tidak mematahkan proses absen `PULANG`.
 
 ---
 
@@ -112,6 +128,27 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.9.0] — 16 November 2026
+- **FEATURE — Manajemen Kehadiran (`DataKetidakhadiran` & Tab `Kehadiran Pegawai` + Ekspansi `Ringkasan Harian`):**
+  - Menambahkan sheet `DataKetidakhadiran` untuk status `LIBUR`, `IZIN`, `SAKIT`, dan `ALPA`.
+  - Menampilkan seluruh pegawai aktif beserta ringkasan (`Hadir`, `Belum Absen`, `Libur`, `Izin/Sakit`, `ALPA`, `Telat`) lintas outlet, posisi, dan status.
+  - Menambahkan tombol Owner **Tandai ALPA (Tutup Hari)** (`closeDailyAttendance`) yang menandai pegawai `BELUM ABSEN` menjadi `ALPA` tanpa menyisipkan baris `DATANG` palsu ke `Data_Absensi`.
+  - Sinkronisasi form `IZIN`/`SAKIT` pegawai ke `DataKetidakhadiran`, `AbsenIzin`, dan `Data_Absensi` dengan deduplikasi harian (`[REF:...]`).
+  - Membatalkan catatan ketidakhadiran hanya menghapus/mengubah baris di `DataKetidakhadiran` tanpa merusak histori `Data_Absensi`.
+- **FEATURE — Manajemen Penempatan Pegawai (`DataPenempatan` & Tab `Manajemen Pegawai`):**
+  - Owner dapat mengatur outlet kerja, posisi permanen, jam masuk/pulang override individu, dan hari kerja (default Senin–Sabtu) per pegawai.
+  - Perubahan penempatan baru otomatis menutup baris penempatan lama pada `H-1` untuk menjaga keutuhan riwayat historis.
+- **FEATURE — Addendum Jadwal Dinamis, Admin Backup & Rotasi Outlet (`JadwalHarian`, `SnapshotAbsensi`, & Tab `Jadwal & Rotasi`):**
+  - Menambahkan sheet `JadwalHarian` (dengan dukungan `NORMAL`, `BACKUP`, `ROTASI`, `PENGGANTI`, serta `DIJADWALKAN`, `LIBUR`, `DIBATALKAN`) dan `SnapshotAbsensi` tanpa mengubah kolom `Data_Absensi` (A–O) maupun `DataPegawai` (A–J).
+  - Pegawai Pickup/Magang dapat ditugaskan sebagai **Admin Backup** atau dirotasi ke outlet lain pada tanggal tertentu tanpa mengubah posisi permanennya di `DataPenempatan`.
+  - Deteksi otomatis bentrok jadwal pada tanggal & jam tumpang tindih, konflik dengan `IZIN`/`SAKIT`, serta peringatan kesiapan Admin outlet (`NO_ADMIN`, `ADMIN_ABSENT_NO_BACKUP`, `BACKUP_READY`, `SCHEDULE_IZIN_CONFLICT`).
+  - `SnapshotAbsensi` mengunci assignment efektif saat `DATANG` agar validasi `PULANG` tetap konsisten meski jadwal berubah setelah `DATANG`.
+- **SECURITY & RELIABILITY:**
+  - Autentikasi Owner melalui endpoint GAS (`ownerLogin`, `verifyOwnerSession`, `ownerLogout`) dengan token sesi berbatas waktu yang wajib pada seluruh aksi tulis Owner (termasuk `saveSettings`).
+  - `getActiveEmployeesSafe()` memastikan kolom sensitif `password`, `SidikWajah`, dan `FaceDescriptor` dari `DataPegawai` tidak pernah dikirim ke client.
+  - Seluruh request jaringan menggunakan `fetchWithTimeout` (20 detik standar, 35 detik untuk upload foto) dengan penanganan `AbortError` yang jelas.
+  - **Catatan Deploy:** Memerlukan *New Deployment* di Google Apps Script dan build ulang Vercel sebelum perubahan v2.9.0 aktif di produksi.
 
 ### [v2.8.0] — 01 Oktober 2026
 - **FIX (Bug #1 — Ringkasan Absensi Hari Ini Sisi Owner):**

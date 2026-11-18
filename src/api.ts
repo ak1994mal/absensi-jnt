@@ -134,3 +134,161 @@ export const DEFAULT_OFFLINE_SETTINGS = {
   gasUrl: ""
 };
 
+// ==================== OWNER AUTH SESSION HELPERS ====================
+
+const OWNER_TOKEN_STORAGE_KEY = "jnt_owner_session_token";
+
+export function getOwnerToken(): string {
+  try {
+    return sessionStorage.getItem(OWNER_TOKEN_STORAGE_KEY) || localStorage.getItem(OWNER_TOKEN_STORAGE_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+export function setOwnerToken(token: string): void {
+  try {
+    if (token) {
+      sessionStorage.setItem(OWNER_TOKEN_STORAGE_KEY, token);
+      localStorage.setItem(OWNER_TOKEN_STORAGE_KEY, token);
+    } else {
+      sessionStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
+      localStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
+    }
+  } catch (e) {}
+}
+
+function normalizeApiError(err: any, fallbackMsg: string): Error {
+  if (isAbortError(err)) {
+    return new Error("Koneksi timeout, sinyal mungkin lemah. Silakan coba lagi.");
+  }
+  return err instanceof Error ? err : new Error(err?.message || fallbackMsg);
+}
+
+async function gasGet(action: string, params: Record<string, string | undefined> = {}, timeoutMs = 20000): Promise<any> {
+  const baseUrl = getActiveGasUrl();
+  if (!baseUrl) {
+    throw new Error("URL Google Apps Script belum terkonfigurasi.");
+  }
+  const search = new URLSearchParams({ action });
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") {
+      search.set(k, v);
+    }
+  }
+  const url = `${baseUrl}?${search.toString()}`;
+  let lastErr: any;
+  for (let i = 0; i <= 1; i++) {
+    try {
+      const res = await fetchWithTimeout(url, { cache: 'no-store' }, timeoutMs);
+      return await parseApiResponse(res, action);
+    } catch (err) {
+      lastErr = err;
+      if (i < 1) {
+        await new Promise((r) => setTimeout(r, 900));
+      }
+    }
+  }
+  throw normalizeApiError(lastErr, `Gagal memuat ${action}`);
+}
+
+async function gasPost(action: string, data: any = {}, includeOwnerToken = true, timeoutMs = 20000): Promise<any> {
+  const baseUrl = getActiveGasUrl();
+  if (!baseUrl) {
+    throw new Error("URL Google Apps Script belum terkonfigurasi.");
+  }
+  const payload: any = { action, data };
+  if (includeOwnerToken) {
+    payload.ownerToken = getOwnerToken();
+  }
+  try {
+    const res = await fetchWithTimeout(
+      baseUrl,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      timeoutMs
+    );
+    return await parseApiResponse(res, action);
+  } catch (err) {
+    throw normalizeApiError(err, `Gagal mengirim ${action}`);
+  }
+}
+
+export async function ownerLoginApi(password: string) {
+  return gasPost('ownerLogin', { password }, false, 20000);
+}
+
+export async function ownerLogoutApi(token?: string) {
+  return gasPost('ownerLogout', { ownerToken: token || getOwnerToken() }, true, 15000);
+}
+
+export async function verifyOwnerSessionApi(token?: string) {
+  const tok = token || getOwnerToken();
+  if (!tok) return { status: 'error', valid: false, message: 'Token tidak tersedia' };
+  return gasGet('verifyOwnerSession', { token: tok }, 15000);
+}
+
+export async function fetchDataPenempatanApi() {
+  return gasGet('getDataPenempatan');
+}
+
+export async function fetchRiwayatPenempatanApi(idPegawai?: string, nama?: string) {
+  return gasGet('getRiwayatPenempatan', { idPegawai, nama });
+}
+
+export async function savePenempatanApi(data: any) {
+  return gasPost('savePenempatan', data, true, 20000);
+}
+
+export async function fetchJadwalHarianApi(tanggal: string) {
+  return gasGet('getJadwalHarian', { tanggal });
+}
+
+export async function fetchRiwayatRotasiApi(params?: { nama?: string; outlet?: string; bulan?: string }) {
+  return gasGet('getRiwayatRotasi', params || {});
+}
+
+export async function saveJadwalHarianApi(data: any) {
+  return gasPost('saveJadwalHarian', data, true, 20000);
+}
+
+export async function updateJadwalHarianApi(data: any) {
+  return gasPost('updateJadwalHarian', data, true, 20000);
+}
+
+export async function cancelJadwalHarianApi(data: any) {
+  return gasPost('cancelJadwalHarian', data, true, 20000);
+}
+
+export async function fetchKehadiranHarianApi(tanggal: string) {
+  return gasGet('getKehadiranHarian', { tanggal });
+}
+
+export async function fetchKetidakhadiranApi(params?: { tanggal?: string; bulan?: string; nama?: string; outlet?: string }) {
+  return gasGet('getKetidakhadiran', params || {});
+}
+
+export async function saveKetidakhadiranApi(data: any) {
+  const timeout = data?.image ? 35000 : 20000;
+  return gasPost('saveKetidakhadiran', data, true, timeout);
+}
+
+export async function updateKetidakhadiranApi(data: any) {
+  const timeout = data?.image ? 35000 : 20000;
+  return gasPost('updateKetidakhadiran', data, true, timeout);
+}
+
+export async function cancelKetidakhadiranApi(data: any) {
+  return gasPost('cancelKetidakhadiran', data, true, 20000);
+}
+
+export async function closeDailyAttendanceApi(data: { tanggal: string; alasan?: string; targetNames?: string[] }) {
+  return gasPost('closeDailyAttendance', data, true, 25000);
+}
+
+export async function fetchPegawaiDetailApi(nama: string, idPegawai?: string, tanggal?: string) {
+  return gasGet('getPegawaiDetail', { nama, idPegawai, tanggal }, 15000);
+}
+

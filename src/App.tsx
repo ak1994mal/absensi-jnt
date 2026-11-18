@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
+import ManajemenPegawaiTab from './components/ManajemenPegawaiTab';
+import JadwalRotasiTab from './components/JadwalRotasiTab';
+import KehadiranPegawaiTab from './components/KehadiranPegawaiTab';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -10,9 +13,16 @@ import {
   parseApiResponse,
   fetchWithTimeout,
   isAbortError,
+  getOwnerToken,
+  setOwnerToken,
+  ownerLoginApi,
+  ownerLogoutApi,
+  verifyOwnerSessionApi,
+  fetchPegawaiDetailApi,
   DEFAULT_OFFLINE_PEGAWAI,
   DEFAULT_OFFLINE_SETTINGS
 } from './api';
+import { EffectiveWorkAssignment, KehadiranHarianRow, KehadiranSummaryStats } from './types/attendance';
 
 
 const getMapEmbedUrl = (url?: string) => {
@@ -407,10 +417,11 @@ export default function App() {
     return (localStorage.getItem("activeTab") as 'absen' | 'owner') || 'absen';
   });
   const [isOwnerLoggedIn, setIsOwnerLoggedIn] = useState(() => {
-    return localStorage.getItem("isOwnerLoggedIn") === "true";
+    return localStorage.getItem("isOwnerLoggedIn") === "true" && !!getOwnerToken();
   });
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerLoginError, setOwnerLoginError] = useState("");
+  const [ownerLoginLoading, setOwnerLoginLoading] = useState(false);
 
   // Active Google Apps Script Web App URL state (Single Source of Truth)
   const [gasUrl, setGasUrl] = useState<string>(() => getActiveGasUrl());
@@ -468,16 +479,21 @@ export default function App() {
 
 
   const [ringkasanHarian, setRingkasanHarian] = useState<any[]>([]);
+  const [ringkasanFullList, setRingkasanFullList] = useState<KehadiranHarianRow[]>([]);
+  const [ringkasanSummary, setRingkasanSummary] = useState<KehadiranSummaryStats | null>(null);
+  const [ringkasanTanggal, setRingkasanTanggal] = useState<string>(() => getBusinessDateJakarta(new Date(), 'YYYY-MM-DD'));
+  const [ringkasanOutletFilter, setRingkasanOutletFilter] = useState<string>('ALL');
+  const [ringkasanPosisiFilter, setRingkasanPosisiFilter] = useState<string>('ALL');
+  const [ringkasanStatusFilter, setRingkasanStatusFilter] = useState<string>('ALL');
+  const [ringkasanNamaSearch, setRingkasanNamaSearch] = useState<string>('');
   const [loadingRingkasan, setLoadingRingkasan] = useState(false);
-
-
-
-
+  const [effectiveAssignment, setEffectiveAssignment] = useState<EffectiveWorkAssignment | null>(null);
+  const [loadingAssignment, setLoadingAssignment] = useState(false);
 
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [laporanBulananOutlet, setLaporanBulananOutlet] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
-  const [ownerView, setOwnerView] = useState<'harian' | 'bulanan' | 'outlet' | 'settings'>('harian');
+  const [ownerView, setOwnerView] = useState<'harian' | 'kehadiran' | 'jadwal' | 'pegawai' | 'bulanan' | 'outlet' | 'settings'>('harian');
   const [laporanBulananSubView, setLaporanBulananSubView] = useState<'pegawai' | 'outlet'>('pegawai');
   const [targetJamKerja, setTargetJamKerja] = useState<number>(12);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
@@ -739,6 +755,22 @@ export default function App() {
   };
 
 
+  const getEffectiveHoursForPosisi = (targetPos: string) => {
+    const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === (targetPos || "").toLowerCase().trim());
+    const matchesEffective = effectiveAssignment &&
+      effectiveAssignment.posisiPenugasan &&
+      effectiveAssignment.posisiPenugasan.toLowerCase().trim() === (targetPos || "").toLowerCase().trim();
+    return {
+      posisiConfig,
+      jamMasuk: matchesEffective && effectiveAssignment.jamMasukEfektif
+        ? formatSheetTime(effectiveAssignment.jamMasukEfektif)
+        : (formatSheetTime(posisiConfig?.jamMasuk) || "08:00"),
+      jamPulang: matchesEffective && effectiveAssignment.jamPulangEfektif
+        ? formatSheetTime(effectiveAssignment.jamPulangEfektif)
+        : (formatSheetTime(posisiConfig?.jamPulang) || "20:00")
+    };
+  };
+
   const checkIfLate = () => {
     if (keterangan !== "DATANG" || !posisi) return false;
 
@@ -747,12 +779,11 @@ export default function App() {
     const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
     if (!workHoursActive) return false;
 
-    const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || "").toLowerCase().trim());
+    const { posisiConfig, jamMasuk } = getEffectiveHoursForPosisi(posisi);
     if (posisiConfig && posisiConfig.enabled === false) return false;
 
     const totalMinutes = getJakartaMinutes();
 
-    const jamMasuk = formatSheetTime(posisiConfig?.jamMasuk) || "08:00";
     const matchMasuk = jamMasuk.match(/^(\d{1,2}):(\d{2})$/);
     const jm = matchMasuk ? parseInt(matchMasuk[1], 10) : 8;
     const mm = matchMasuk ? parseInt(matchMasuk[2], 10) : 0;
@@ -762,8 +793,6 @@ export default function App() {
 
     // Sesuai aturan Toleransi Keterlambatan:
     // Sampai dengan jamMasuk + toleransi (inclusive) adalah TEPAT WAKTU / NORMAL.
-    // Contoh: Masuk 08:00 + toleransi 60m = 09:00.
-    // 08:20 -> NORMAL, 08:59 -> NORMAL, 09:00 -> NORMAL, 09:01 -> TELAT.
     return totalMinutes > batasToleransiMenit;
   };
 
@@ -778,12 +807,11 @@ export default function App() {
     const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
     if (!workHoursActive) return false;
 
-    const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || "").toLowerCase().trim());
+    const { posisiConfig, jamPulang } = getEffectiveHoursForPosisi(posisi);
     if (posisiConfig && posisiConfig.enabled === false) return false;
 
     const totalMinutes = getJakartaMinutes();
 
-    const jamPulang = formatSheetTime(posisiConfig?.jamPulang) || "20:00";
     const matchPulang = jamPulang.match(/^(\d{1,2}):(\d{2})$/);
     const jp = matchPulang ? parseInt(matchPulang[1], 10) : 20;
     const mp = matchPulang ? parseInt(matchPulang[2], 10) : 0;
@@ -1060,10 +1088,10 @@ export default function App() {
   };
 
 
-  const fetchRingkasanHarian = async () => {
+  const fetchRingkasanHarian = async (tanggalOverride?: string) => {
     setLoadingRingkasan(true);
     setErrorRingkasan("");
-    const todayStr = getTodayString();
+    const targetYmd = tanggalOverride || ringkasanTanggal || getBusinessDateJakarta(new Date(), 'YYYY-MM-DD');
 
     if (!GAS_URL) {
       setErrorRingkasan("URL Google Apps Script belum terkonfigurasi.");
@@ -1072,8 +1100,8 @@ export default function App() {
     }
 
     try {
-      console.log(`[fetchRingkasanHarian] Memuat ringkasan hari ini (${todayStr})...`);
-      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian&tanggal=${encodeURIComponent(todayStr)}`);
+      console.log(`[fetchRingkasanHarian] Memuat ringkasan tanggal (${targetYmd})...`);
+      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian&tanggal=${encodeURIComponent(targetYmd)}`);
       const data = await parseApiResponse(res, 'getRingkasanHarian');
       
       if (data.status === 'success') {
@@ -1085,6 +1113,8 @@ export default function App() {
           jamPulang: formatSheetTime(r.jamPulang),
         }));
         setRingkasanHarian(formattedData);
+        setRingkasanFullList(Array.isArray(data.fullList) ? data.fullList : []);
+        setRingkasanSummary(data.summary || null);
         setErrorRingkasan("");
       } else {
         throw new Error(data.message || 'Gagal memuat ringkasan absensi');
@@ -1097,6 +1127,8 @@ export default function App() {
         setErrorRingkasan(e?.message ? `Data absensi gagal dimuat (${e.message})` : "Data absensi gagal dimuat.");
       }
       setRingkasanHarian([]);
+      setRingkasanFullList([]);
+      setRingkasanSummary(null);
     } finally {
       setLoadingRingkasan(false);
     }
@@ -1225,10 +1257,18 @@ export default function App() {
 
   const [savingSettings, setSavingSettings] = useState(false);
 
+  const handleRequireOwnerReauth = () => {
+    setOwnerToken("");
+    setIsOwnerLoggedIn(false);
+    localStorage.removeItem("isOwnerLoggedIn");
+  };
+
   const sendSaveSettings = async (data: any, urlOverride?: string) => {
     const targetUrl = urlOverride || getActiveGasUrl();
+    const ownerToken = getOwnerToken();
     const payload = {
       action: 'saveSettings',
+      ownerToken,
       data
     };
     try {
@@ -1236,13 +1276,21 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(payload)
       }, 20000);
-      return await parseApiResponse(response, 'saveSettings');
+      const parsed = await parseApiResponse(response, 'saveSettings');
+      if (parsed?.authRequired) {
+        handleRequireOwnerReauth();
+      }
+      return parsed;
     } catch (err: any) {
       console.warn("[saveSettings] POST error, trying GET fallback:", err?.message || err);
       try {
-        const url = `${targetUrl}?action=saveSettings&data=${encodeURIComponent(JSON.stringify(data))}`;
+        const url = `${targetUrl}?action=saveSettings&ownerToken=${encodeURIComponent(ownerToken)}&data=${encodeURIComponent(JSON.stringify(data))}`;
         const response = await fetchWithTimeout(url, { cache: 'no-store' }, 20000);
-        return await parseApiResponse(response, 'saveSettings');
+        const parsed = await parseApiResponse(response, 'saveSettings');
+        if (parsed?.authRequired) {
+          handleRequireOwnerReauth();
+        }
+        return parsed;
       } catch (getErr: any) {
         console.warn("[saveSettings] GET fallback failed:", getErr?.message || getErr);
         const isTimeout = isAbortError(getErr) || isAbortError(err);
@@ -1598,18 +1646,71 @@ export default function App() {
 
 
   useEffect(() => {
+    let active = true;
     if (activeTab === 'absen' && nama) {
       fetchRiwayat(nama, riwayatBulan);
+      if (GAS_URL) {
+        setLoadingAssignment(true);
+        fetchPegawaiDetailApi(nama, undefined, getBusinessDateJakarta(new Date(), 'YYYY-MM-DD'))
+          .then((res) => {
+            if (!active) return;
+            if (res?.status === 'success' && res.effectiveAssignment) {
+              setEffectiveAssignment(res.effectiveAssignment as EffectiveWorkAssignment);
+            } else {
+              setEffectiveAssignment(null);
+            }
+          })
+          .catch(() => {
+            if (active) setEffectiveAssignment(null);
+          })
+          .finally(() => {
+            if (active) setLoadingAssignment(false);
+          });
+      }
+    } else if (!nama) {
+      setEffectiveAssignment(null);
     }
+    return () => {
+      active = false;
+    };
   }, [nama, activeTab, riwayatBulan]);
 
+  // Pre-fill outlet & posisi saat effectiveAssignment dimuat untuk pegawai yang dipilih (non-PULANG)
+  useEffect(() => {
+    if (!nama || !effectiveAssignment || openAttendanceToday) return;
+    if (effectiveAssignment.outletEfektif) {
+      setOutlet(matchOutletOption(effectiveAssignment.outletEfektif));
+    }
+    if (effectiveAssignment.posisiPenugasan) {
+      setPosisi(matchPosisiOption(effectiveAssignment.posisiPenugasan));
+    }
+  }, [nama, effectiveAssignment, openAttendanceToday]);
+
+  // Verifikasi token sesi Owner saat membuka panel Owner
+  useEffect(() => {
+    if (activeTab === 'owner' && isOwnerLoggedIn && GAS_URL) {
+      const tok = getOwnerToken();
+      if (!tok) {
+        handleRequireOwnerReauth();
+        return;
+      }
+      verifyOwnerSessionApi(tok)
+        .then((res) => {
+          if (res?.status !== 'success' || res?.valid === false) {
+            handleRequireOwnerReauth();
+            toast.info('Sesi Owner sudah berakhir. Silakan login kembali.');
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab === 'owner' && isOwnerLoggedIn) {
-      if (ownerView === 'harian') fetchRingkasanHarian();
+      if (ownerView === 'harian') fetchRingkasanHarian(ringkasanTanggal);
       if (ownerView === 'bulanan') fetchLaporanBulanan(laporanBulan);
     }
-  }, [activeTab, isOwnerLoggedIn, ownerView, laporanBulan]);
+  }, [activeTab, isOwnerLoggedIn, ownerView, laporanBulan, ringkasanTanggal]);
 
 
 
@@ -1711,9 +1812,8 @@ export default function App() {
       const rawHours = settingsData?.enableWorkHours;
       const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
       const targetPosisi = (openRecord?.posisi || posisi || "").toLowerCase().trim();
-      const posisiConfig = availablePositions.find(p => p.name.toLowerCase().trim() === targetPosisi);
+      const { posisiConfig, jamPulang } = getEffectiveHoursForPosisi(targetPosisi);
       if (workHoursActive && (!posisiConfig || posisiConfig.enabled !== false)) {
-        const jamPulang = formatSheetTime(posisiConfig?.jamPulang) || "20:00";
         const matchPulang = jamPulang.match(/^(\d{1,2}):(\d{2})$/);
         const jp = matchPulang ? parseInt(matchPulang[1], 10) : 20;
         const mp = matchPulang ? parseInt(matchPulang[2], 10) : 0;
@@ -1995,14 +2095,43 @@ export default function App() {
   };
 
 
-  const handleOwnerLogin = (e: React.FormEvent) => {
+  const handleOwnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (ownerPasswordInput === "jntowner") {
-      setIsOwnerLoggedIn(true);
-      localStorage.setItem("isOwnerLoggedIn", "true");
-      setOwnerLoginError("");
-    } else {
-      setOwnerLoginError("Password salah!");
+    setOwnerLoginError("");
+    if (!ownerPasswordInput.trim()) {
+      setOwnerLoginError("Masukkan password Owner.");
+      return;
+    }
+
+    if (!GAS_URL) {
+      if (ownerPasswordInput === "jntowner") {
+        setOwnerToken("preview-local-token");
+        setIsOwnerLoggedIn(true);
+        localStorage.setItem("isOwnerLoggedIn", "true");
+        setOwnerPasswordInput("");
+      } else {
+        setOwnerLoginError("Password salah!");
+      }
+      return;
+    }
+
+    setOwnerLoginLoading(true);
+    try {
+      const res = await ownerLoginApi(ownerPasswordInput);
+      if (res?.status === "success" && res?.token) {
+        setOwnerToken(res.token);
+        setIsOwnerLoggedIn(true);
+        localStorage.setItem("isOwnerLoggedIn", "true");
+        setOwnerPasswordInput("");
+        setOwnerLoginError("");
+        toast.success("Login Owner berhasil.");
+      } else {
+        setOwnerLoginError(res?.message || "Password salah!");
+      }
+    } catch (err: any) {
+      setOwnerLoginError(err?.message || "Gagal menghubungi server login Owner.");
+    } finally {
+      setOwnerLoginLoading(false);
     }
   };
 
@@ -2106,6 +2235,28 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {nama && effectiveAssignment && !loadingAssignment && (
+                <div className={`mt-2 p-2.5 rounded-md border text-xs ${
+                  effectiveAssignment.statusJadwal === 'LIBUR'
+                    ? 'bg-amber-50 border-amber-200 text-amber-900'
+                    : effectiveAssignment.jenisPenugasan !== 'NORMAL'
+                    ? 'bg-blue-50 border-blue-200 text-blue-900'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                }`}>
+                  {effectiveAssignment.statusJadwal === 'LIBUR' ? (
+                    <p>
+                      <strong>Jadwal Hari Ini: LIBUR</strong> — Anda tetap diperbolehkan absen jika lembur atau tukar shift.
+                    </p>
+                  ) : (
+                    <p>
+                      <strong>Penugasan Aktif ({effectiveAssignment.jenisPenugasan}):</strong>{' '}
+                      {effectiveAssignment.posisiPenugasan || '-'} di{' '}
+                      {effectiveAssignment.outletEfektif || '-'}{' '}
+                      <span className="font-mono">({effectiveAssignment.jamMasukEfektif} – {effectiveAssignment.jamPulangEfektif})</span>
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
 
@@ -2206,7 +2357,7 @@ export default function App() {
                     <div className="text-xs">
                       <p className="font-bold text-amber-900 text-sm">Belum Waktunya Absen PULANG</p>
                       <p className="mt-0.5 text-amber-800 leading-relaxed">
-                        Jam pulang Anda untuk posisi <strong>{posisi}</strong> adalah <strong>{formatSheetTime(availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || '').toLowerCase().trim())?.jamPulang) || "20:00"}</strong>. Absen pulang sebelum jam kepulangan resmi ditolak oleh sistem.
+                        Jam pulang Anda untuk posisi <strong>{posisi}</strong> adalah <strong>{getEffectiveHoursForPosisi(posisi).jamPulang}</strong>. Absen pulang sebelum jam kepulangan resmi ditolak oleh sistem.
                       </p>
                     </div>
                   </div>
@@ -2361,7 +2512,7 @@ export default function App() {
             ) : (keterangan === 'PULANG' && isEarlyLeave) ? (
               <>
                 <Clock className="w-5 h-5" />
-                <span>Belum Waktunya Pulang ({formatSheetTime(availablePositions.find(p => p.name.toLowerCase().trim() === (posisi || '').toLowerCase().trim())?.jamPulang) || "20:00"})</span>
+                <span>Belum Waktunya Pulang ({getEffectiveHoursForPosisi(posisi).jamPulang})</span>
               </>
             ) : (
               <>
@@ -2538,12 +2689,17 @@ export default function App() {
             {isOwnerLoggedIn && (
                <button
                   onClick={() => {
+                    const tok = getOwnerToken();
+                    if (GAS_URL && tok) {
+                      ownerLogoutApi(tok).catch(() => {});
+                    }
+                    setOwnerToken("");
                     setIsOwnerLoggedIn(false);
                     localStorage.removeItem("isOwnerLoggedIn");
                     setOwnerPasswordInput("");
                     setOwnerView('harian');
                   }}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:bg-[#a30000] p-2 rounded-lg transition"
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:bg-[#a30000] p-2 rounded-lg transition cursor-pointer"
                   title="Logout"
                >
                  <LogOut className="w-5 h-5" />
@@ -2553,7 +2709,7 @@ export default function App() {
           {!isOwnerLoggedIn ? (
             <div className="p-8 flex flex-col items-center justify-center min-h-[300px]">
               <h2 className="text-xl font-bold text-neutral-800 mb-2">Akses Dibatasi</h2>
-              <p className="text-neutral-500 mb-6 text-center max-w-sm">Masukkan password owner untuk melihat data absensi pegawai.</p>
+              <p className="text-neutral-500 mb-6 text-center max-w-sm">Masukkan password owner untuk melihat data dan mengelola penugasan pegawai.</p>
               <form onSubmit={handleOwnerLogin} className="w-full max-w-xs space-y-4">
                 <div>
                   <input 
@@ -2565,8 +2721,8 @@ export default function App() {
                   />
                 </div>
                 {ownerLoginError && <p className="text-red-600 text-sm font-semibold">{ownerLoginError}</p>}
-                <button type="submit" className="w-full bg-[#cc0000] hover:bg-[#a30000] text-white font-bold py-3 rounded-lg shadow transition">
-                  Login
+                <button type="submit" disabled={ownerLoginLoading} className="w-full bg-[#cc0000] hover:bg-[#a30000] text-white font-bold py-3 rounded-lg shadow transition disabled:opacity-60 cursor-pointer">
+                  {ownerLoginLoading ? 'Memverifikasi...' : 'Login'}
                 </button>
               </form>
             </div>
@@ -2574,31 +2730,47 @@ export default function App() {
             <div className="p-4 md:p-6">
               
               {/* Owner Sub-Tabs */}
-              <div className="flex gap-2 mb-6 border-b border-neutral-200 pb-2 overflow-x-auto">
-                <div className="flex gap-2 min-w-max">
+              <div className="flex gap-1.5 mb-6 border-b border-neutral-200 pb-2 overflow-x-auto">
+                <div className="flex gap-1.5 min-w-max">
                   <button 
                     onClick={() => setOwnerView('harian')}
-                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'harian' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'harian' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
                   >
                     Ringkasan Harian
                   </button>
                   <button 
+                    onClick={() => setOwnerView('kehadiran')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'kehadiran' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    Kehadiran Pegawai
+                  </button>
+                  <button 
+                    onClick={() => setOwnerView('jadwal')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'jadwal' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    Jadwal & Rotasi
+                  </button>
+                  <button 
+                    onClick={() => setOwnerView('pegawai')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'pegawai' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    Manajemen Pegawai
+                  </button>
+                  <button 
                     onClick={() => setOwnerView('bulanan')}
-                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'bulanan' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'bulanan' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
                   >
                     Laporan Bulanan
                   </button>
                   <button 
                     onClick={() => setOwnerView('outlet')}
-                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'outlet' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'outlet' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
                   >
                     Kelola Outlet
                   </button>
                   <button 
-                    onClick={() => {
-                      setOwnerView('settings');
-                    }}
-                    className={`px-4 py-2 font-bold text-sm rounded-t-lg transition-colors ${ownerView === 'settings' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                    onClick={() => setOwnerView('settings')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer ${ownerView === 'settings' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
                   >
                     Settings
                   </button>
@@ -2617,45 +2789,121 @@ export default function App() {
                   >
                     <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
                     <div className="flex items-center gap-2.5">
-                      <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Hari Ini</h2>
-                      <span className="text-xs font-bold px-2.5 py-1 bg-red-50 text-[#cc0000] border border-red-200 rounded-full">
-                        {todayStr}
-                      </span>
+                      <h2 className="font-bold text-neutral-700 text-lg">Ringkasan Absensi Harian</h2>
+                      <input
+                        type="date"
+                        value={ringkasanTanggal}
+                        onChange={(e) => setRingkasanTanggal(e.target.value)}
+                        className="text-xs font-mono font-bold px-2.5 py-1.5 bg-neutral-50 border border-neutral-300 rounded-lg outline-none focus:ring-2 focus:ring-[#cc0000]"
+                      />
                     </div>
-                    <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button 
-                        onClick={fetchRingkasanHarian} 
-                        className="text-sm bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-medium px-4 py-2 rounded-lg transition h-[36px]"
+                        onClick={() => fetchRingkasanHarian(ringkasanTanggal)} 
+                        className="text-sm bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-medium px-4 py-2 rounded-lg transition h-[36px] cursor-pointer"
                       >
                         Refresh Data
                       </button>
                     </div>
                   </div>
+
+                  {/* Filter Ringkasan Harian: Outlet, Posisi, Status, Nama */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 bg-neutral-50 p-2.5 rounded-lg border border-neutral-200">
+                    <input
+                      type="text"
+                      value={ringkasanNamaSearch}
+                      onChange={(e) => setRingkasanNamaSearch(e.target.value)}
+                      placeholder="Cari nama pegawai..."
+                      className="px-3 py-1.5 text-xs bg-white border border-neutral-300 rounded-md outline-none focus:ring-2 focus:ring-[#cc0000]"
+                    />
+                    <select
+                      value={ringkasanOutletFilter}
+                      onChange={(e) => setRingkasanOutletFilter(e.target.value)}
+                      className="px-3 py-1.5 text-xs bg-white border border-neutral-300 rounded-md outline-none focus:ring-2 focus:ring-[#cc0000]"
+                    >
+                      <option value="ALL">Semua Outlet</option>
+                      {(settingsData?.outlets || []).map((o: any) => (
+                        <option key={o.nama} value={o.nama}>{o.nama}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={ringkasanPosisiFilter}
+                      onChange={(e) => setRingkasanPosisiFilter(e.target.value)}
+                      className="px-3 py-1.5 text-xs bg-white border border-neutral-300 rounded-md outline-none focus:ring-2 focus:ring-[#cc0000]"
+                    >
+                      <option value="ALL">Semua Posisi</option>
+                      {availablePositions.map((p) => (
+                        <option key={p.name} value={p.name}>{p.name}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={ringkasanStatusFilter}
+                      onChange={(e) => setRingkasanStatusFilter(e.target.value)}
+                      className="px-3 py-1.5 text-xs bg-white border border-neutral-300 rounded-md outline-none focus:ring-2 focus:ring-[#cc0000]"
+                    >
+                      <option value="ALL">Semua Status</option>
+                      <option value="HADIR">HADIR</option>
+                      <option value="BELUM ABSEN">BELUM ABSEN</option>
+                      <option value="LIBUR">LIBUR</option>
+                      <option value="IZIN">IZIN</option>
+                      <option value="SAKIT">SAKIT</option>
+                      <option value="ALPA">ALPA</option>
+                    </select>
+                  </div>
                   
                   {errorRingkasan && (
                     <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
                       <span className="text-sm font-medium">{errorRingkasan}</span>
-                      <button onClick={fetchRingkasanHarian} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
+                      <button onClick={() => fetchRingkasanHarian(ringkasanTanggal)} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-sm font-bold rounded transition">
                         Coba Lagi
                       </button>
                     </div>
                   )}
                   
-                  {!loadingRingkasan && ringkasanHarian.length > 0 && (
-                    <div className="grid grid-cols-3 gap-3 mb-6">
-                      <div className="bg-white border border-neutral-200 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
-                        <p className="text-xs text-neutral-500 font-bold mb-1">Pegawai Hadir</p>
-                        <p className="text-2xl font-black text-neutral-800">{ringkasanHarian.filter(r => r.keterangan !== 'IZIN' && r.jamDatang).length}</p>
+                  {!loadingRingkasan && (ringkasanSummary || ringkasanHarian.length > 0) && (
+                    ringkasanSummary ? (
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5 mb-5">
+                        <div className="bg-white border border-neutral-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-neutral-500 font-bold">Pegawai Hadir</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-emerald-700">{ringkasanSummary.hadir}</p>
+                        </div>
+                        <div className="bg-white border border-amber-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-amber-800 font-bold">Belum Absen</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-amber-800">{ringkasanSummary.belumAbsen}</p>
+                        </div>
+                        <div className="bg-white border border-neutral-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-neutral-600 font-bold">Libur</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-neutral-700">{ringkasanSummary.libur}</p>
+                        </div>
+                        <div className="bg-white border border-blue-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-blue-700 font-bold">Izin / Sakit</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-blue-700">{ringkasanSummary.izin + ringkasanSummary.sakit}</p>
+                        </div>
+                        <div className="bg-white border border-red-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-red-700 font-bold">ALPA</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-red-700">{ringkasanSummary.alpa}</p>
+                        </div>
+                        <div className="bg-white border border-rose-200 p-3 rounded-lg text-center">
+                          <p className="text-[11px] text-rose-600 font-bold">Total Telat</p>
+                          <p className="text-xl font-black font-mono tabular-nums text-rose-700">{ringkasanSummary.telat}</p>
+                        </div>
                       </div>
-                      <div className="bg-white border border-red-100 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
-                        <p className="text-xs text-red-500 font-bold mb-1">Total Telat</p>
-                        <p className="text-2xl font-black text-red-600">{ringkasanHarian.filter(r => r.statusMasuk === 'TELAT').length}</p>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-3 mb-6">
+                        <div className="bg-white border border-neutral-200 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
+                          <p className="text-xs text-neutral-500 font-bold mb-1">Pegawai Hadir</p>
+                          <p className="text-2xl font-black text-neutral-800">{ringkasanHarian.filter(r => r.keterangan !== 'IZIN' && r.jamDatang).length}</p>
+                        </div>
+                        <div className="bg-white border border-red-100 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
+                          <p className="text-xs text-red-500 font-bold mb-1">Total Telat</p>
+                          <p className="text-2xl font-black text-red-600">{ringkasanHarian.filter(r => r.statusMasuk === 'TELAT').length}</p>
+                        </div>
+                        <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
+                          <p className="text-xs text-blue-500 font-bold mb-1">Belum Pulang</p>
+                          <p className="text-2xl font-black text-blue-600">{ringkasanHarian.filter(r => r.keterangan !== 'IZIN' && r.jamDatang && (!r.jamPulang || r.jamPulang === '-')).length}</p>
+                        </div>
                       </div>
-                      <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm flex flex-col justify-center items-center">
-                        <p className="text-xs text-blue-500 font-bold mb-1">Belum Pulang</p>
-                        <p className="text-2xl font-black text-blue-600">{ringkasanHarian.filter(r => r.keterangan !== 'IZIN' && r.jamDatang && (!r.jamPulang || r.jamPulang === '-')).length}</p>
-                      </div>
-                    </div>
+                    )
                   )}
 
 
@@ -2712,14 +2960,14 @@ export default function App() {
                     <p className="text-xs text-red-600 mt-1 max-w-md">{errorRingkasan}</p>
                   </div>
                   <button 
-                    onClick={fetchRingkasanHarian}
+                    onClick={() => fetchRingkasanHarian(ringkasanTanggal)}
                     className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg shadow transition cursor-pointer"
                   >
                     Coba Lagi
                   </button>
                 </div>
               ) : ringkasanHarian.length === 0 ? (
-                <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada absensi hari ini ({todayStr}).</div>
+                <div className="text-center text-neutral-500 py-10 border border-neutral-200 rounded-lg">Belum ada transaksi absensi pada tanggal {ringkasanTanggal}.</div>
               ) : (
                 <>
                 {/* Desktop Table View */}
@@ -2736,7 +2984,14 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {ringkasanHarian.map((row, idx) => (
+                      {ringkasanHarian
+                        .filter((row) => {
+                          if (ringkasanOutletFilter !== 'ALL' && row.outlet !== ringkasanOutletFilter) return false;
+                          if (ringkasanPosisiFilter !== 'ALL' && row.posisi !== ringkasanPosisiFilter) return false;
+                          if (ringkasanNamaSearch.trim() && !String(row.nama || '').toLowerCase().includes(ringkasanNamaSearch.trim().toLowerCase())) return false;
+                          return true;
+                        })
+                        .map((row, idx) => (
                         <tr key={idx} className="border-b border-neutral-100 last:border-0 hover:bg-neutral-50 align-top">
                           <td className="px-5 py-4">
                             <div className="font-bold text-neutral-800">{row.nama}</div>
@@ -2849,7 +3104,14 @@ export default function App() {
 
                 {/* Mobile Card View */}
                 <div className="md:hidden flex flex-col gap-4">
-                  {ringkasanHarian.map((row, idx) => (
+                  {ringkasanHarian
+                    .filter((row) => {
+                      if (ringkasanOutletFilter !== 'ALL' && row.outlet !== ringkasanOutletFilter) return false;
+                      if (ringkasanPosisiFilter !== 'ALL' && row.posisi !== ringkasanPosisiFilter) return false;
+                      if (ringkasanNamaSearch.trim() && !String(row.nama || '').toLowerCase().includes(ringkasanNamaSearch.trim().toLowerCase())) return false;
+                      return true;
+                    })
+                    .map((row, idx) => (
                     <div key={idx} className="bg-white border border-neutral-200 rounded-xl p-4 shadow-sm flex flex-col gap-3 relative overflow-hidden">
                       {/* Status indicator line on the left */}
                       <div className={`absolute left-0 top-0 bottom-0 w-1 ${row.statusMasuk === 'TEPAT WAKTU' ? 'bg-green-500' : row.statusMasuk === 'TELAT' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
@@ -2945,7 +3207,121 @@ export default function App() {
                 </div>
                 </>
               )}
+                {/* Daftar Status Lengkap Pegawai (Ringkasan Harian Diperluas) */}
+                {ringkasanFullList.length > 0 && (
+                  <div className="mt-6 border border-neutral-200 rounded-lg overflow-hidden bg-white">
+                    <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between">
+                      <span className="text-xs font-bold text-neutral-800">Status Kehadiran Seluruh Pegawai Aktif</span>
+                      <button
+                        type="button"
+                        onClick={() => setOwnerView('kehadiran')}
+                        className="text-[11px] font-bold text-[#cc0000] hover:underline cursor-pointer"
+                      >
+                        Kelola di Kehadiran Pegawai &rarr;
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-neutral-50/70 text-neutral-500 border-b">
+                          <tr>
+                            <th className="px-4 py-2.5 font-semibold">Pegawai</th>
+                            <th className="px-4 py-2.5 font-semibold">Outlet</th>
+                            <th className="px-4 py-2.5 font-semibold">Posisi</th>
+                            <th className="px-4 py-2.5 font-semibold">Masuk / Pulang</th>
+                            <th className="px-4 py-2.5 font-semibold">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {ringkasanFullList
+                            .filter((item) => {
+                              if (ringkasanOutletFilter !== 'ALL' && item.outlet !== ringkasanOutletFilter) return false;
+                              if (ringkasanPosisiFilter !== 'ALL' && item.posisiPenugasan !== ringkasanPosisiFilter && item.posisi !== ringkasanPosisiFilter) return false;
+                              if (ringkasanStatusFilter !== 'ALL' && item.statusKehadiran !== ringkasanStatusFilter) return false;
+                              if (ringkasanNamaSearch.trim() && !item.nama.toLowerCase().includes(ringkasanNamaSearch.trim().toLowerCase())) return false;
+                              return true;
+                            })
+                            .map((item, idx) => (
+                              <tr key={`${item.nama}-${idx}`} className="hover:bg-neutral-50/60">
+                                <td className="px-4 py-2.5 font-bold text-neutral-900">
+                                  {item.nama}
+                                  {item.jenisPenugasan !== 'NORMAL' && (
+                                    <span className="ml-1.5 px-1.5 py-0.5 bg-amber-100 text-amber-900 rounded text-[10px]">
+                                      {item.jenisPenugasan}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-2.5 text-neutral-700">{item.outlet}</td>
+                                <td className="px-4 py-2.5 font-semibold text-[#cc0000]">{item.posisiPenugasan}</td>
+                                <td className="px-4 py-2.5 font-mono text-neutral-700">{item.jamDatang} – {item.jamPulang}</td>
+                                <td className="px-4 py-2.5 font-bold">{item.statusKehadiran}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
+                )}
+                  </div>
+                </motion.div>
+              )}
+
+              {ownerView === 'kehadiran' && (
+                <motion.div
+                  key="owner-kehadiran"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <KehadiranPegawaiTab
+                    outlets={settingsData?.outlets || EMPTY_ARRAY}
+                    positions={availablePositions}
+                    todayYmd={getBusinessDateJakarta(new Date(), 'YYYY-MM-DD')}
+                    onPreview={(m) =>
+                      setPreviewModal({
+                        ...m,
+                        url: m.type === 'map' ? (getMapEmbedUrl(m.url) || m.url) : m.url
+                      })
+                    }
+                    onRequireAuth={handleRequireOwnerReauth}
+                    onDataChanged={() => fetchRingkasanHarian(ringkasanTanggal)}
+                  />
+                </motion.div>
+              )}
+
+              {ownerView === 'jadwal' && (
+                <motion.div
+                  key="owner-jadwal"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <JadwalRotasiTab
+                    outlets={settingsData?.outlets || EMPTY_ARRAY}
+                    positions={availablePositions}
+                    todayYmd={getBusinessDateJakarta(new Date(), 'YYYY-MM-DD')}
+                    onRequireAuth={handleRequireOwnerReauth}
+                    onDataChanged={() => fetchRingkasanHarian(ringkasanTanggal)}
+                  />
+                </motion.div>
+              )}
+
+              {ownerView === 'pegawai' && (
+                <motion.div
+                  key="owner-pegawai"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <ManajemenPegawaiTab
+                    outlets={settingsData?.outlets || EMPTY_ARRAY}
+                    positions={availablePositions}
+                    todayYmd={getBusinessDateJakarta(new Date(), 'YYYY-MM-DD')}
+                    onRequireAuth={handleRequireOwnerReauth}
+                    onDataChanged={() => fetchRingkasanHarian(ringkasanTanggal)}
+                  />
                 </motion.div>
               )}
 
