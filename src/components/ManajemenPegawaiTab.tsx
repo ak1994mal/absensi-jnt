@@ -123,6 +123,11 @@ export default function ManajemenPegawaiTab({
     setError('');
     try {
       const res = await fetchDataPenempatanApi();
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (res?.status === 'success') {
         setEmployees(Array.isArray(res.data) ? res.data : []);
         if (Array.isArray(res.outlets) && res.outlets.length > 0) setApiOutlets(res.outlets);
@@ -273,6 +278,11 @@ export default function ManajemenPegawaiTab({
     setHistoryLoading(true);
     try {
       const res = await fetchRiwayatPenempatanApi(emp.idPegawai, emp.nama);
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (res?.status === 'success') {
         setHistoryRows(Array.isArray(res.data) ? res.data : []);
       } else {

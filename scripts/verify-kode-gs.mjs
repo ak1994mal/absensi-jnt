@@ -15,7 +15,9 @@ const fnNames = [...kodeSource.matchAll(/^function\s+([a-zA-Z0-9_]+)/gm)].map((m
 assert.equal(new Set(fnNames).size, fnNames.length, 'Kode.gs must not have duplicate function names');
 
 // Mock GAS Runtime
-function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
+function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z', opts = {}) {
+  const configuredPassword = opts.ownerPassword !== undefined ? opts.ownerPassword : 'SecretOwner#2026';
+  const fault = opts.fault || {};
   let mockNowMs = Date.parse(initialTimeIso);
   const RealDate = Date;
   class MockDate extends RealDate {
@@ -114,7 +116,7 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
     ['toleransi_telat', 60],
     ['enableWorkHours', 'TRUE'],
     ['gasUrl', ''],
-    ['owner_password', 'jntowner']
+    ['owner_password', configuredPassword]
   ]));
   sheets.set('DataOutlet', new MockSheet('DataOutlet', [
     ['Nama Outlet', 'Latitude', 'Longitude', 'Toleransi Radius'],
@@ -127,13 +129,15 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
     ['Pickup', '14:00', '22:00', 'TRUE'],
     ['Magang', '08:00', '17:00', 'TRUE']
   ]));
-  sheets.set('DataPegawai', new MockSheet('DataPegawai', [
+  const pegawaiRows = [
     ['Nama', 'ID', 'email', 'password', 'no_Telepon', 'TglAktif', 'TglNonAktif', 'Status', 'SidikWajah', 'FaceDescriptor'],
     ['Riska', 'EMP001', 'riska@jnt.test', 'secret123', '0811', '01/01/2026', '', 'AKTIF', 'fp-riska', '[0.11,0.22]'],
     ['Budi Kurir', 'EMP002', 'budi@jnt.test', 'secret456', '0812', '01/01/2026', '', 'AKTIF', 'fp-budi', '[0.33,0.44]'],
     ['Siti Magang', 'EMP003', 'siti@jnt.test', 'secret789', '0813', '01/01/2026', '', 'AKTIF', 'fp-siti', '[0.55,0.66]'],
-    ['Dedi Nonaktif', 'EMP004', 'dedi@jnt.test', 'x', '0814', '01/01/2026', '01/10/2026', 'NONAKTIF', '', '']
-  ]));
+    ['Dedi Nonaktif', 'EMP004', 'dedi@jnt.test', 'x', '0814', '01/01/2026', '01/10/2026', 'NONAKTIF', '', ''],
+    ...(opts.extraEmployees || [])
+  ];
+  sheets.set('DataPegawai', new MockSheet('DataPegawai', pegawaiRows));
   sheets.set('Data_Absensi', new MockSheet('Data_Absensi', [
     ['Tanggal', 'Nama', 'Posisi', 'Outlet', 'Jam Datang', 'Jam Pulang', 'Total Jam', 'Status Masuk', 'Status Pulang', 'Lokasi Datang', 'Lokasi Pulang', 'Foto Datang', 'Foto Pulang', 'Ket Datang', 'Ket Pulang']
   ]));
@@ -143,6 +147,9 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
 
   const cacheStore = new Map();
   const propStore = new Map();
+  if (opts.scriptPropOwnerPassword) {
+    propStore.set('OWNER_PASSWORD', opts.scriptPropOwnerPassword);
+  }
   let uuidCounter = 0;
 
   const ssMock = {
@@ -156,12 +163,36 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
     Math, JSON, Number, String, Array, Object, Boolean, parseInt, parseFloat, isNaN, isFinite, RegExp, Error,
     SpreadsheetApp: { openById: () => ssMock },
     LockService: { getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) },
-    CacheService: { getScriptCache: () => ({ put: (k, v) => cacheStore.set(k, v), get: (k) => cacheStore.get(k) || null, remove: (k) => cacheStore.delete(k) }) },
+    CacheService: {
+      getScriptCache: () => ({
+        put: (k, v) => {
+          if (fault.cachePutThrows) throw new Error('Cache put failed');
+          cacheStore.set(k, v);
+        },
+        get: (k) => {
+          if (fault.cacheGetThrows) throw new Error('Cache get failed');
+          return cacheStore.get(k) || null;
+        },
+        remove: (k) => {
+          if (fault.cacheRemoveThrows) throw new Error('Cache remove failed');
+          cacheStore.delete(k);
+        }
+      })
+    },
     PropertiesService: {
       getScriptProperties: () => ({
-        getProperty: (k) => propStore.get(k) || null,
-        setProperty: (k, v) => propStore.set(k, v),
-        deleteProperty: (k) => propStore.delete(k),
+        getProperty: (k) => {
+          if (fault.propGetThrows) throw new Error('Props get failed');
+          return propStore.get(k) || null;
+        },
+        setProperty: (k, v) => {
+          if (fault.propSetThrows) throw new Error('Props set failed');
+          propStore.set(k, v);
+        },
+        deleteProperty: (k) => {
+          if (fault.propDeleteThrows) throw new Error('Props delete failed');
+          propStore.delete(k);
+        },
         getProperties: () => Object.fromEntries(propStore.entries())
       })
     },
@@ -177,7 +208,10 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
       createTextOutput: (t) => ({ setMimeType: () => t })
     },
     Utilities: {
-      getUuid: () => `mockuuid-${++uuidCounter}-abcdef`,
+      getUuid: () => {
+        const tag = (100000 + (++uuidCounter)).toString(36).toUpperCase().padStart(6, '0');
+        return `${tag}aa-4000-8000-9000-000000000000`;
+      },
       base64Decode: (s) => Buffer.from(s, 'base64'),
       newBlob: (b, t, n) => ({ b, t, n }),
       formatDate: (d, tz, fmt) => {
@@ -200,6 +234,9 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z') {
   return {
     ctx: sandbox,
     sheets,
+    cacheStore,
+    propStore,
+    fault,
     setTimeIso: (iso) => { mockNowMs = Date.parse(iso); }
   };
 }
@@ -216,12 +253,13 @@ assert.equal(unauthRes.authRequired, true, 'Write endpoints must reject missing 
 const badLogin = ctx.ownerLogin({ password: 'wrong' });
 assert.equal(badLogin.status, 'error');
 
-const loginRes = ctx.ownerLogin({ password: 'jntowner' });
+const loginRes = ctx.ownerLogin({ password: 'SecretOwner#2026' });
 assert.equal(loginRes.status, 'success');
 let token = loginRes.token;
 assert.ok(token, 'Owner login must issue session token');
 
-const penempatanInit = ctx.getDataPenempatan();
+const penempatanInit = ctx.getDataPenempatan(token);
+assert.equal(penempatanInit.status, 'success');
 assert.equal(penempatanInit.data.length, 3, 'Only 3 AKTIF employees returned (Dedi Nonaktif excluded)');
 const serialized = JSON.stringify(penempatanInit);
 assert.equal(serialized.includes('secret123'), false, 'Employee password must never leak');
@@ -254,7 +292,7 @@ const p1Update = ctx.savePenempatan({
 }, token);
 assert.equal(p1Update.status, 'success', p1Update.message);
 
-const riskaHistory = ctx.getRiwayatPenempatan('EMP001', 'Riska').data;
+const riskaHistory = ctx.getRiwayatPenempatan('EMP001', 'Riska', token).data;
 assert.equal(riskaHistory.length, 2, 'Historical placement row must be preserved');
 assert.equal(riskaHistory[1].tanggalAkhir, '2026-11-15', 'Old placement closed on day before new start');
 
@@ -299,7 +337,7 @@ assert.equal(expiredAttempt.status, 'error');
 assert.equal(expiredAttempt.authRequired, true, 'Expired ownerToken (>8h) must be rejected');
 
 // Re-login after expiry
-token = ctx.ownerLogin({ password: 'jntowner' }).token;
+token = ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
 assert.ok(token, 'Owner re-login succeeds');
 
 // Sunday 2026-11-22: Budi Kurir (Pickup) assigned as Admin Backup at Jayanti; Riska marked LIBUR
@@ -334,13 +372,13 @@ const conflictIzin = ctx.saveKetidakhadiran({
 assert.equal(conflictIzin.status, 'success', conflictIzin.message);
 assert.ok(conflictIzin.scheduleConflictWarning.includes('KONFLIK'), 'Must warn when BACKUP employee is marked SAKIT');
 
-const sunScheduleView = ctx.getJadwalHarian('2026-11-22');
+const sunScheduleView = ctx.getJadwalHarian('2026-11-22', token);
 assert.ok(sunScheduleView.alerts.some((a) => a.type === 'SCHEDULE_IZIN_CONFLICT'), 'Must surface SCHEDULE_IZIN_CONFLICT alert');
 assert.ok(sunScheduleView.alerts.some((a) => a.type === 'NO_ADMIN' || a.type === 'ADMIN_ABSENT_NO_BACKUP'), 'Must surface missing Admin alert when Admin & backup unavailable');
 
 // Test 8: Employee form IZIN/SAKIT syncs DataKetidakhadiran + AbsenIzin + Data_Absensi without duplicate
 env.setTimeIso('2026-11-17T01:00:00.000Z'); // 08:00 WIB Selasa 17 Nov
-token = ctx.ownerLogin({ password: 'jntowner' }).token;
+token = ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
 const empIzin1 = ctx.processForm({
   nama: 'Siti Magang', posisi: 'Magang', status: 'IZIN', jenisIzin: 'Sakit', alasan: 'Flu berat', image: 'data:image/jpeg;base64,/9j/4AAQ'
 });
@@ -350,7 +388,7 @@ const empIzin2 = ctx.processForm({
 });
 assert.equal(empIzin2.status, 'success', empIzin2.message);
 
-const ketRowsNov17 = ctx.getKetidakhadiran('2026-11-17').data;
+const ketRowsNov17 = ctx.getKetidakhadiran('2026-11-17', '', '', '', token).data;
 assert.equal(ketRowsNov17.length, 1, 'DataKetidakhadiran deduplicates same-day employee IZIN/SAKIT');
 assert.equal(ketRowsNov17[0].status, 'SAKIT');
 
@@ -361,19 +399,19 @@ assert.equal(closeRes.status, 'success', closeRes.message);
 assert.deepEqual([...closeRes.markedNames].sort(), ['Budi Kurir', 'Riska']);
 assert.equal(sheets.get('Data_Absensi').rows.length, absRowsBeforeClose, 'closeDailyAttendance must NOT create fake DATANG rows in Data_Absensi');
 
-const dailyNov17 = ctx.getKehadiranHarian('2026-11-17');
+const dailyNov17 = ctx.getKehadiranHarian('2026-11-17', token);
 assert.equal(dailyNov17.summary.sakit, 1);
 assert.equal(dailyNov17.summary.alpa, 2);
 
 // Test 10: cancelKetidakhadiran removes only DataKetidakhadiran row, preserving Data_Absensi
 const cancelAbsenceRes = ctx.cancelKetidakhadiran({ tanggal: '2026-11-17', idPegawai: 'EMP003', nama: 'Siti Magang' }, token);
 assert.equal(cancelAbsenceRes.status, 'success', cancelAbsenceRes.message);
-assert.equal(ctx.getKetidakhadiran('2026-11-17', '', 'Siti Magang').data.length, 0);
+assert.equal(ctx.getKetidakhadiran('2026-11-17', '', 'Siti Magang', '', token).data.length, 0);
 assert.equal(sheets.get('Data_Absensi').rows.length, absRowsBeforeClose, 'Data_Absensi history preserved on cancelKetidakhadiran');
 
 // ==================== KOREKSI ABSENSI MANUAL (v2.9.1) ====================
 env.setTimeIso('2026-11-18T03:00:00.000Z'); // 10:00 WIB Rabu 18 Nov
-token = ctx.ownerLogin({ password: 'jntowner' }).token;
+token = ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
 
 // Budi Pickup (jadwal 14:00-22:00) atau Riska (jadwal 08:30-19:00):
 // Budi absen DATANG di 15:10 (TELAT karena > 14:00 + 60m = 15:00) dan lupa absen pulang
@@ -464,7 +502,7 @@ const delManualRes = ctx.deleteAbsensi({
 }, token);
 assert.equal(delManualRes.status, 'success', delManualRes.message);
 
-const ringkasanNov18 = ctx.getRingkasanHarian('2026-11-18');
+const ringkasanNov18 = ctx.getRingkasanHarian('2026-11-18', token);
 assert.equal(ringkasanNov18.data.some((r) => r.nama === 'Riska'), false, 'Deleted (DIBATALKAN) row must NOT appear in Ringkasan Harian');
 assert.equal(ringkasanNov18.data.some((r) => r.nama === 'Budi Kurir'), true, 'Active row still appears in Ringkasan Harian');
 
@@ -472,4 +510,630 @@ const listAfterDelete = ctx.getAbsensiByDate('2026-11-18', '', '', token);
 const cancelledRow = listAfterDelete.data.find((r) => r.nama === 'Riska');
 assert.ok(cancelledRow && cancelledRow.isCancelled && cancelledRow.statusMasuk === 'DIBATALKAN', 'Row preserved with DIBATALKAN status and audit trail');
 
-console.log('ALL 16 VERIFICATION SCENARIOS PASSED SUCCESSFULLY');
+// ==================== PHASE A: SECURITY & EMPLOYEE IDENTITY HARDENING (18 TESTS) ====================
+
+// PA-1: Strict AKTIF filter excludes blank, NONAKTIF, NON-AKTIF, INACTIVE, RESIGN, CUTI and keeps trimmed case-insensitive AKTIF
+const paEnv = createGasEnv('2026-11-21T02:00:00.000Z', {
+  extraEmployees: [
+    ['Kosong Status', 'EMP005', 'kosong@jnt.test', 'p5', '0815', '01/01/2026', '', '', 'fp5', '[0.1]'],
+    ['Spasi Kosong', 'EMP006', 'spasi@jnt.test', 'p6', '0816', '01/01/2026', '', '   ', 'fp6', '[0.2]'],
+    ['Resign Emp', 'EMP007', 'resign@jnt.test', 'p7', '0817', '01/01/2026', '', 'RESIGN', 'fp7', '[0.3]'],
+    ['Cuti Emp', 'EMP008', 'cuti@jnt.test', 'p8', '0818', '01/01/2026', '', 'CUTI', 'fp8', '[0.4]'],
+    ['Non Hyphen', 'EMP009', 'nh@jnt.test', 'p9', '0819', '01/01/2026', '', 'NON-AKTIF', 'fp9', '[0.5]'],
+    ['Inactive Emp', 'EMP010', 'inact@jnt.test', 'p10', '0820', '01/01/2026', '', 'INACTIVE', 'fp10', '[0.6]'],
+    ['Trim Aktif', 'EMP011', 'trim@jnt.test', 'p11', '0821', '01/01/2026', '', ' aktif ', 'fp11', '[0.7]']
+  ]
+});
+const activeNames = Array.from(paEnv.ctx.getActiveEmployeesSafe()).map((e) => e.nama);
+assert.deepEqual(activeNames, ['Riska', 'Budi Kurir', 'Siti Magang', 'Trim Aktif'], 'Only explicit AKTIF employees allowed');
+
+// PA-2: DataPegawai original values untouched & getPegawai returns only active names
+assert.equal(paEnv.sheets.get('DataPegawai').rows[5][7], '', 'Original blank status in DataPegawai preserved');
+assert.deepEqual(Array.from(paEnv.ctx.getPegawai().data), ['Riska', 'Budi Kurir', 'Siti Magang', 'Trim Aktif']);
+
+// PA-3: serializeEmployeePublic strips PII & secrets
+const sampleRawEmp = paEnv.ctx.getActiveEmployeesSafe()[0];
+const pubSerialized = paEnv.ctx.serializeEmployeePublic(sampleRawEmp);
+assert.equal(pubSerialized.email, undefined, 'Public serializer must omit email');
+assert.equal(pubSerialized.noTelepon, undefined, 'Public serializer must omit noTelepon');
+assert.equal(pubSerialized.tanggalAktif, undefined, 'Public serializer must omit tanggalAktif');
+assert.equal(pubSerialized.password, undefined, 'Public serializer must omit password');
+assert.equal(pubSerialized.SidikWajah, undefined, 'Public serializer must omit SidikWajah');
+assert.equal(pubSerialized.FaceDescriptor, undefined, 'Public serializer must omit FaceDescriptor');
+assert.deepEqual(Object.keys(pubSerialized).sort(), ['duplicateName', 'idPegawai', 'missingId', 'nama', 'status']);
+
+// PA-4: serializeEmployeeForOwner strips password/SidikWajah/FaceDescriptor even for Owner
+const ownerSerialized = paEnv.ctx.serializeEmployeeForOwner(sampleRawEmp);
+assert.equal(ownerSerialized.email, 'riska@jnt.test');
+assert.equal(ownerSerialized.noTelepon, '0811');
+assert.equal(ownerSerialized.password, undefined, 'Owner serializer must never expose password');
+assert.equal(ownerSerialized.SidikWajah, undefined, 'Owner serializer must never expose SidikWajah');
+assert.equal(ownerSerialized.FaceDescriptor, undefined, 'Owner serializer must never expose FaceDescriptor');
+
+// PA-5: Public getPegawaiDetail hides email, noTelepon, placementHistory, absenceToday, secrets while keeping effectiveAssignment
+const pubDetail = JSON.parse(paEnv.ctx.doGet({
+  parameter: { action: 'getPegawaiDetail', nama: 'Riska', tanggal: '2026-11-21' }
+}));
+assert.equal(pubDetail.status, 'success');
+assert.ok(pubDetail.effectiveAssignment, 'Public getPegawaiDetail keeps effectiveAssignment');
+assert.equal(pubDetail.pegawai.email, undefined);
+assert.equal(pubDetail.pegawai.noTelepon, undefined);
+assert.equal(pubDetail.placementHistory, undefined);
+assert.equal(pubDetail.absenceToday, undefined);
+assert.equal(JSON.stringify(pubDetail).includes('riska@jnt.test'), false);
+assert.equal(JSON.stringify(pubDetail).includes('secret123'), false);
+
+// PA-6: Owner getPegawaiDetail via POST with valid token returns owner detail without secrets
+const paTok = paEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+const ownerDetail = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'getPegawaiDetail', ownerToken: paTok, data: { nama: 'Riska', tanggal: '2026-11-21' } }) }
+}));
+assert.equal(ownerDetail.status, 'success');
+assert.equal(ownerDetail.pegawai.email, 'riska@jnt.test');
+assert.equal(JSON.stringify(ownerDetail).includes('secret123'), false);
+assert.equal(JSON.stringify(ownerDetail).includes('fp-riska'), false);
+assert.equal(JSON.stringify(ownerDetail).includes('[0.11,0.22]'), false);
+
+// PA-7: All sensitive Owner endpoints reject missing/invalid token
+for (const fnCall of [
+  () => paEnv.ctx.getDataPenempatan(''),
+  () => paEnv.ctx.getRiwayatPenempatan('EMP001', 'Riska', ''),
+  () => paEnv.ctx.getJadwalHarian('2026-11-21', ''),
+  () => paEnv.ctx.getRiwayatRotasi('', '', '', ''),
+  () => paEnv.ctx.getKehadiranHarian('2026-11-21', ''),
+  () => paEnv.ctx.getKetidakhadiran('2026-11-21', '', '', '', ''),
+  () => paEnv.ctx.getRingkasanHarian('2026-11-21', ''),
+  () => paEnv.ctx.getLaporanBulanan('2026-11', ''),
+  () => paEnv.ctx.getAbsensiByDate('2026-11-21', '', '', '')
+]) {
+  const res = fnCall();
+  assert.equal(res.status, 'error');
+  assert.equal(res.authRequired, true);
+}
+
+// PA-8: Hardcoded "jntowner" fallback completely removed when Settings!B10 and OWNER_PASSWORD are empty
+const unconfEnv = createGasEnv('2026-11-21T02:00:00.000Z', { ownerPassword: '' });
+assert.equal(unconfEnv.ctx.getConfiguredOwnerPassword(), '', 'Unconfigured owner password must return empty string');
+const jntAttempt = unconfEnv.ctx.ownerLogin({ password: 'jntowner' });
+assert.equal(jntAttempt.status, 'error');
+assert.equal(jntAttempt.notConfigured, true, 'Unconfigured login must fail cleanly without fallback');
+
+// PA-9: OWNER_PASSWORD in ScriptProperties works when Settings!B10 empty; literal "jntowner" fails when another password is set
+const propPassEnv = createGasEnv('2026-11-21T02:00:00.000Z', { ownerPassword: '', scriptPropOwnerPassword: 'PropSecret!99' });
+assert.equal(propPassEnv.ctx.ownerLogin({ password: 'jntowner' }).status, 'error');
+const propLogin = propPassEnv.ctx.ownerLogin({ password: 'PropSecret!99' });
+assert.equal(propLogin.status, 'success');
+assert.equal(JSON.stringify(propLogin).includes('PropSecret!99'), false, 'Login response must never echo password');
+
+// PA-10: doGet rejects saveSettings and rejects ownerToken/token in URL query parameters
+const getSaveAttempt = JSON.parse(paEnv.ctx.doGet({
+  parameter: { action: 'saveSettings', data: JSON.stringify({ requireLocation: false }) }
+}));
+assert.equal(getSaveAttempt.status, 'error');
+assert.equal(getSaveAttempt.authRequired, true, 'doGet saveSettings must be rejected');
+
+const getWithTokenAttempt = JSON.parse(paEnv.ctx.doGet({
+  parameter: { action: 'getPegawai', ownerToken: paTok }
+}));
+assert.equal(getWithTokenAttempt.status, 'error');
+assert.equal(getWithTokenAttempt.authRequired, true, 'doGet must reject ownerToken in URL query');
+
+const getWithQueryTokenAttempt = JSON.parse(paEnv.ctx.doGet({
+  parameter: { action: 'verifyOwnerSession', token: paTok }
+}));
+assert.equal(getWithQueryTokenAttempt.status, 'error');
+assert.equal(getWithQueryTokenAttempt.authRequired, true, 'doGet must reject token query param & verifyOwnerSession over GET');
+
+// PA-11: doGet rejects Owner read endpoints
+for (const action of ['getDataPenempatan', 'getRiwayatPenempatan', 'getJadwalHarian', 'getRiwayatRotasi', 'getKehadiranHarian', 'getKetidakhadiran', 'getAbsensiByDate', 'getRingkasanHarian', 'getLaporanBulanan']) {
+  const r = JSON.parse(paEnv.ctx.doGet({ parameter: { action } }));
+  assert.equal(r.status, 'error', `doGet ${action} must be rejected`);
+  assert.equal(r.authRequired, true);
+}
+
+// PA-12: doPost saveSettings succeeds with valid ownerToken in body and rejects without token
+const postSaveNoTok = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'saveSettings', data: { requireLocation: false } }) }
+}));
+assert.equal(postSaveNoTok.status, 'error');
+assert.equal(postSaveNoTok.authRequired, true);
+
+const postSaveOk = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'saveSettings', ownerToken: paTok, data: { requireLocation: false } }) }
+}));
+assert.equal(postSaveOk.status, 'success', postSaveOk.message);
+assert.equal(paEnv.sheets.get('Settings').getRange('B3').getValue(), 'FALSE');
+
+// PA-13: doPost verifyOwnerSession & getAbsensiByDate work via POST body
+const postVerifyOk = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'verifyOwnerSession', ownerToken: paTok }) }
+}));
+assert.equal(postVerifyOk.status, 'success');
+assert.equal(postVerifyOk.valid, true);
+
+const postAbsOk = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'getAbsensiByDate', ownerToken: paTok, data: { tanggal: '2026-11-21' } }) }
+}));
+assert.equal(postAbsOk.status, 'success');
+
+// PA-14: ownerLogout revokes from both CacheService and PropertiesService; subsequent verify fails
+const logoutOk = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'ownerLogout', ownerToken: paTok }) }
+}));
+assert.equal(logoutOk.status, 'success');
+assert.equal(paEnv.ctx.checkOwnerToken(paTok).ok, false, 'Revoked token must immediately fail checkOwnerToken');
+assert.equal(paEnv.ctx.verifyOwnerSession(paTok).valid, false);
+
+// PA-15: ownerLogout fails (does NOT return fake success) when CacheService or PropertiesService throws
+const tokForFault = paEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+paEnv.fault.propDeleteThrows = true;
+const logoutFailRes = paEnv.ctx.ownerLogout(tokForFault);
+assert.equal(logoutFailRes.status, 'error', 'ownerLogout must return error if revocation storage fails');
+paEnv.fault.propDeleteThrows = false;
+
+// PA-16: checkOwnerToken fails closed when storage throws or JSON is corrupted
+paEnv.fault.cacheGetThrows = true;
+const failClosedCache = paEnv.ctx.checkOwnerToken(tokForFault);
+assert.equal(failClosedCache.ok, false, 'checkOwnerToken must fail closed when CacheService throws');
+assert.equal(failClosedCache.message.includes(tokForFault), false, 'Error message must not leak token');
+paEnv.fault.cacheGetThrows = false;
+
+paEnv.cacheStore.delete('OWNER_TOKEN_' + tokForFault);
+paEnv.fault.propGetThrows = true;
+const failClosedProp = paEnv.ctx.checkOwnerToken(tokForFault);
+assert.equal(failClosedProp.ok, false, 'checkOwnerToken must fail closed when PropertiesService throws');
+paEnv.fault.propGetThrows = false;
+
+paEnv.propStore.set('OWNER_TOKEN_corrupt-tok', '{not-json');
+assert.equal(paEnv.ctx.checkOwnerToken('corrupt-tok').ok, false, 'Corrupted session JSON must fail closed');
+
+// PA-17: Expired token rejected cleanly via verifyOwnerSession
+paEnv.setTimeIso('2026-11-22T02:00:00.000Z'); // +24h (>8h TTL)
+const expiredVerify = paEnv.ctx.verifyOwnerSession(tokForFault);
+assert.equal(expiredVerify.valid, false);
+assert.equal(expiredVerify.authRequired, true);
+
+// PA-18: Frontend & source security invariants
+const apiTs = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+const appTsx = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+assert.equal(kodeSource.includes('jntowner'), false, 'Kode.gs must not contain hardcoded jntowner');
+assert.equal(apiTs.includes('jntowner'), false, 'src/api.ts must not contain hardcoded jntowner');
+assert.equal(appTsx.includes('jntowner'), false, 'src/App.tsx must not contain hardcoded jntowner');
+assert.equal(appTsx.includes('action=saveSettings'), false, 'src/App.tsx must not have GET saveSettings fallback');
+assert.equal(apiTs.includes('localStorage.setItem(OWNER_TOKEN_STORAGE_KEY'), false, 'ownerToken must not be written to localStorage');
+assert.equal(apiTs.includes("gasGet('verifyOwnerSession'"), false, 'verifyOwnerSession must use POST, not gasGet');
+assert.equal(apiTs.includes("gasGet(\n    'getAbsensiByDate'"), false, 'getAbsensiByDate must use POST, not gasGet');
+assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi must not silently ignore network errors');
+
+// ==================== PHASE B: ATTENDANCE LOGIC & DATA INTEGRITY TESTS (14 SCENARIOS) ====================
+
+// PB-1: Unscheduled active employee (no DataPenempatan & no JadwalHarian) -> BELUM DIJADWALKAN & excluded from ALPA
+{
+  const pbEnv = createGasEnv('2026-11-21T03:00:00.000Z');
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  // Schedule only Riska; Budi Kurir & Siti Magang have neither DataPenempatan nor JadwalHarian
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Admin', jamMasuk: '08:00', jamPulang: '20:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+
+  const effUnsched = pbEnv.ctx.getEffectiveWorkAssignment('EMP002', '2026-11-21');
+  assert.equal(effUnsched.statusJadwal, 'BELUM_DIJADWALKAN');
+  assert.equal(effUnsched.sumberJadwal, 'BELUM_DIJADWALKAN');
+  assert.equal(effUnsched.isScheduledToWork, false);
+
+  const hadirRes = pbEnv.ctx.getKehadiranHarian('2026-11-21', pbTok);
+  const budiRow = hadirRes.data.find((r) => r.nama === 'Budi Kurir');
+  const riskaRow = hadirRes.data.find((r) => r.nama === 'Riska');
+  assert.equal(budiRow.statusKehadiran, 'BELUM DIJADWALKAN');
+  assert.equal(riskaRow.statusKehadiran, 'BELUM ABSEN');
+  assert.equal(hadirRes.summary.belumDijadwalkan, 2);
+
+  // Tutup hari must only mark Riska, NOT unscheduled Budi/Siti
+  const closeRes = pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-21', targetNames: ['Riska', 'Budi Kurir'] }, pbTok);
+  assert.equal(closeRes.status, 'success');
+  assert.equal(closeRes.partial, true);
+  assert.deepEqual(Array.from(closeRes.markedNames), ['Riska']);
+  assert.equal(closeRes.skippedCount, 1);
+}
+
+// PB-2: Active employee before tanggalAktif is BELUM DIJADWALKAN even with DataPenempatan
+{
+  const pbEnv = createGasEnv('2026-11-21T03:00:00.000Z', {
+    extraEmployees: [
+      ['New Hire', 'EMP020', 'new@jnt.test', 'p', '0820', '01/12/2026', '', 'AKTIF', '', '']
+    ]
+  });
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP020', nama: 'New Hire', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Pickup', jamMasuk: '08:00', jamPulang: '17:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+  const kehadiran = pbEnv.ctx.getKehadiranHarian('2026-11-21', pbTok);
+  const newHireRow = kehadiran.data.find((r) => r.nama === 'New Hire');
+  assert.equal(newHireRow.statusKehadiran, 'BELUM DIJADWALKAN');
+}
+
+// PB-3: Split-shift (allowSplitShift: true) non-overlapping shifts across 2 outlets + open-shift guard + aggregated duration
+{
+  const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+
+  const s1 = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisiPenugasan: 'Admin', jamMasuk: '08:00', jamPulang: '12:00',
+    jenisPenugasan: 'BACKUP', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21', allowSplitShift: true
+  }, pbTok);
+  assert.equal(s1.status, 'success', s1.message);
+
+  const s2 = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP JAYANTI CIKANDE',
+    posisiPenugasan: 'Pickup', jamMasuk: '14:00', jamPulang: '18:00',
+    jenisPenugasan: 'ROTASI', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21', allowSplitShift: true
+  }, pbTok);
+  assert.equal(s2.status, 'success', s2.message);
+
+  // Overlapping split shift must be rejected even with allowSplitShift: true
+  const sOverlap = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP JAYANTI CIKANDE',
+    posisiPenugasan: 'Pickup', jamMasuk: '11:00', jamPulang: '15:00',
+    jenisPenugasan: 'ROTASI', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21', allowSplitShift: true
+  }, pbTok);
+  assert.equal(sOverlap.status, 'error', 'Overlapping shift must be rejected');
+
+  // Shift 1 DATANG at 08:00 WIB
+  const d1 = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(d1.status, 'success', d1.message);
+  assert.equal(d1.assignmentUsed.jamPulangEfektif, '12:00');
+
+  // Trying DATANG at Outlet 2 while Shift 1 is still open must fail!
+  pbEnv.setTimeIso('2026-11-21T07:05:00.000Z'); // 14:05 WIB
+  const d2Blocked = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
+    outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
+  });
+  assert.equal(d2Blocked.status, 'error', 'Cannot DATANG on shift 2 while shift 1 is still open');
+
+  // Close Shift 1 at 14:10 WIB
+  pbEnv.setTimeIso('2026-11-21T07:10:00.000Z');
+  const p1 = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(p1.status, 'success', p1.message);
+
+  // Now Shift 2 DATANG at 14:15 WIB & PULANG at 18:15 WIB
+  pbEnv.setTimeIso('2026-11-21T07:15:00.000Z');
+  const d2 = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
+    outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
+  });
+  assert.equal(d2.status, 'success', d2.message);
+  assert.equal(d2.assignmentUsed.posisiPenugasan, 'Pickup');
+
+  pbEnv.setTimeIso('2026-11-21T11:15:00.000Z'); // 18:15 WIB
+  const p2 = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
+    outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
+  });
+  assert.equal(p2.status, 'success', p2.message);
+
+  const pbTokRefresh = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const kehadiran = pbEnv.ctx.getKehadiranHarian('2026-11-21', pbTokRefresh);
+  const budi = kehadiran.data.find((r) => r.nama === 'Budi Kurir');
+  assert.equal(budi.statusKehadiran, 'HADIR');
+  assert.equal(budi.shiftCount, 2);
+  assert.equal(budi.multipleSchedules, true);
+  assert.equal(budi.totalJam, '10j 10m'); // 6j 10m + 4j 0m
+}
+
+// PB-4: Ambiguous multiple schedules & outlet mismatch against JadwalHarian are rejected on DATANG
+{
+  const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  // Insert two same-outlet schedules on same date directly into JadwalHarian (within wide window)
+  pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisiPenugasan: 'Admin', jamMasuk: '08:00', jamPulang: '12:00',
+    jenisPenugasan: 'NORMAL', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21', allowSplitShift: true
+  }, pbTok);
+  pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisiPenugasan: 'Pickup', jamMasuk: '09:30', jamPulang: '15:00',
+    jenisPenugasan: 'BACKUP', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21', allowSplitShift: true
+  }, pbTok);
+  // Wait: saveJadwalHarian rejected the overlap! Test manual sheet row with close shift times (<60m early window)
+  const jSheet = pbEnv.sheets.get('JadwalHarian');
+  jSheet.rows.push(['JDW-AMBIG', '21/11/2026', 'EMP001', 'Riska', 'YZ_ MDP PASIR JAHA BALARAJA', 'Pickup', '08:30', '13:00', 'BACKUP', 'DIJADWALKAN', '', 'Owner', '', '']);
+
+  const ambigRes = pbEnv.ctx.processForm({
+    nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(ambigRes.status, 'error', 'Ambiguous active schedules must be rejected, not silently pick first');
+
+  // Outlet mismatch vs single JadwalHarian
+  jSheet.rows.pop();
+  const mismatchRes = pbEnv.ctx.processForm({
+    nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
+    outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Admin'
+  });
+  assert.equal(mismatchRes.status, 'error', 'DATANG at wrong outlet vs JadwalHarian must be rejected');
+}
+
+// PB-5: Ad-hoc other-outlet DATANG without JadwalHarian uses DataPosisi hours & MANUAL_OUTLET_OVERRIDE snapshot
+{
+  const pbEnv = createGasEnv('2026-11-21T07:05:00.000Z'); // 14:05 WIB
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Admin', jamMasuk: '07:00', jamPulang: '19:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+  const dOverride = pbEnv.ctx.processForm({
+    nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
+    outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
+  });
+  assert.equal(dOverride.status, 'success', dOverride.message);
+  assert.equal(dOverride.assignmentUsed.sumberJadwal, 'MANUAL_OUTLET_OVERRIDE');
+  assert.equal(dOverride.assignmentUsed.jamMasukEfektif, '14:00');
+  assert.equal(dOverride.assignmentUsed.jamPulangEfektif, '22:00');
+}
+
+// PB-6: Overnight shift (22:00 -> 06:00 next day) DATANG/PULANG & post-DATANG JadwalHarian immutability
+{
+  const pbEnv = createGasEnv('2026-11-21T15:00:00.000Z'); // 21 Nov 22:00 WIB
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const sch = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisiPenugasan: 'Pickup', jamMasuk: '22:00', jamPulang: '06:00',
+    jenisPenugasan: 'ROTASI', statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21'
+  }, pbTok);
+  assert.equal(sch.status, 'success', sch.message);
+
+  const dNight = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
+  });
+  assert.equal(dNight.status, 'success', dNight.message);
+
+  // Edit JadwalHarian after DATANG to verify snapshot isolation
+  pbEnv.ctx.updateJadwalHarian({
+    idJadwal: sch.createdIds[0], outlet: 'YZ_ MDP JAYANTI CIKANDE', posisiPenugasan: 'Admin',
+    jamMasuk: '08:00', jamPulang: '23:00', jenisPenugasan: 'ROTASI', statusJadwal: 'DIJADWALKAN',
+    confirmAfterDatang: true
+  }, pbTok);
+
+  // At 23:00 WIB on 21 Nov (before 06:00 next morning), PULANG must fail
+  pbEnv.setTimeIso('2026-11-21T16:00:00.000Z');
+  const earlyNightPulang = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
+  });
+  assert.equal(earlyNightPulang.status, 'error', 'Overnight shift PULANG before 06:00 next day must fail');
+
+  // At 06:15 WIB on 22 Nov -> PULANG succeeds and closes yesterday's shift with 8j 15m
+  pbEnv.setTimeIso('2026-11-21T23:15:00.000Z'); // 22 Nov 06:15 WIB
+  const okNightPulang = pbEnv.ctx.processForm({
+    nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
+  });
+  assert.equal(okNightPulang.status, 'success', okNightPulang.message);
+  const absRow = pbEnv.sheets.get('Data_Absensi').rows[1];
+  assert.equal(absRow[0], '21/11/2026');
+  assert.equal(absRow[5], '06:15');
+  assert.equal(absRow[6], '8j 15m');
+}
+
+// PB-7: processForm rejects NONAKTIF employee and ambiguous duplicateName without idPegawai
+{
+  const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z', {
+    extraEmployees: [
+      ['Andi', '', 'a1@jnt.test', 'p', '081', '01/01/2026', '', 'AKTIF', '', ''],
+      ['Andi', '', 'a2@jnt.test', 'p', '082', '01/01/2026', '', 'AKTIF', '', '']
+    ]
+  });
+  const nonAktifSubmit = pbEnv.ctx.processForm({
+    nama: 'Dedi Nonaktif', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(nonAktifSubmit.status, 'error');
+
+  const dupSubmit = pbEnv.ctx.processForm({
+    nama: 'Andi', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(dupSubmit.status, 'error', 'Duplicate name without idPegawai must be rejected');
+}
+
+// PB-8: Duplicate closed single-shift DATANG rejected, IZIN after DATANG rejected, case/whitespace name canonicalized
+{
+  const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const d1 = pbEnv.ctx.processForm({
+    nama: '  riska ', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(d1.status, 'success', d1.message);
+  assert.equal(pbEnv.sheets.get('Data_Absensi').rows[1][1], 'Riska', 'Name should be canonicalized to DataPegawai nama');
+
+  pbEnv.setTimeIso('2026-11-21T13:15:00.000Z'); // 20:15 WIB
+  const p1 = pbEnv.ctx.processForm({
+    nama: 'Riska', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(p1.status, 'success', p1.message);
+
+  // Duplicate DATANG after closed single shift -> rejected
+  const d2 = pbEnv.ctx.processForm({
+    nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
+  });
+  assert.equal(d2.status, 'error');
+
+  // IZIN after already DATANG -> rejected
+  const izinAfter = pbEnv.ctx.processForm({
+    nama: 'Riska', status: 'IZIN', posisi: 'Admin', jenisIzin: 'Izin', alasan: 'Urusan'
+  });
+  assert.equal(izinAfter.status, 'error');
+}
+
+// PB-9 & PB-10: IZIN -> SAKIT re-submission deduplication + cancelKetidakhadiran soft-cancel + Data_Absensi sync + clean re-submit
+{
+  const pbEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+
+  const izin1 = pbEnv.ctx.processForm({
+    nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Izin', alasan: 'Keperluan keluarga'
+  });
+  assert.equal(izin1.status, 'success');
+  const izin2 = pbEnv.ctx.processForm({
+    nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Sakit', alasan: 'Demam tinggi'
+  });
+  assert.equal(izin2.status, 'success');
+
+  assert.equal(pbEnv.sheets.get('DataKetidakhadiran').rows.length, 2, 'DataKetidakhadiran must not duplicate on re-submit');
+  assert.equal(pbEnv.sheets.get('AbsenIzin').rows.length, 2, 'AbsenIzin must not duplicate on re-submit');
+  assert.equal(pbEnv.sheets.get('Data_Absensi').rows.length, 2, 'Data_Absensi must not duplicate IZIN row on re-submit');
+  assert.equal(pbEnv.sheets.get('DataKetidakhadiran').rows[1][5], 'SAKIT');
+
+  // Cancel Siti's SAKIT via Owner
+  const cancelRes = pbEnv.ctx.cancelKetidakhadiran({
+    tanggal: '2026-11-21', idPegawai: 'EMP003', nama: 'Siti Magang', alasan: 'Salah input'
+  }, pbTok);
+  assert.equal(cancelRes.status, 'success', cancelRes.message);
+  assert.equal(pbEnv.sheets.get('DataKetidakhadiran').rows[1][5], 'DIBATALKAN', 'DataKetidakhadiran should be soft-cancelled');
+  assert.equal(pbEnv.sheets.get('Data_Absensi').rows[1][7], 'DIBATALKAN', 'Synced IZIN row in Data_Absensi must be DIBATALKAN');
+  assert.equal(pbEnv.sheets.get('Data_Absensi').rows[1][15], 'Owner');
+
+  // Verify canceled absence disappears from all active views
+  assert.equal(pbEnv.ctx.getKetidakhadiran('2026-11-21', '', 'Siti Magang', '', pbTok).data.length, 0);
+  assert.equal(pbEnv.ctx.getKehadiranHarian('2026-11-21', pbTok).data.find((r) => r.nama === 'Siti Magang').statusKehadiran, 'BELUM DIJADWALKAN');
+  assert.equal(pbEnv.ctx.getRingkasanHarian('2026-11-21', pbTok).data.length, 0);
+  assert.equal(pbEnv.ctx.getRiwayat('Siti Magang').data.length, 0);
+  const lapCancel = pbEnv.ctx.getLaporanBulanan('2026-11', pbTok);
+  assert.equal(lapCancel.data.length, 0, 'Cancelled absence must not appear in Laporan Bulanan');
+
+  // Clean re-submission after cancellation creates new active record
+  const izinAfterCancel = pbEnv.ctx.processForm({
+    nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Izin', alasan: 'Izin baru sah'
+  });
+  assert.equal(izinAfterCancel.status, 'success');
+  assert.equal(pbEnv.ctx.getKetidakhadiran('2026-11-21', '', 'Siti Magang', '', pbTok).data.length, 1);
+}
+
+// PB-11 & PB-12: closeDailyAttendance safety (future rejected, dryRun no-write, idempotent rerun, skipped statuses) & LIBUR conflict
+{
+  const pbEnv = createGasEnv('2026-11-21T10:00:00.000Z');
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Admin', jamMasuk: '08:00', jamPulang: '20:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Pickup', jamMasuk: '14:00', jamPulang: '22:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+  // Set Budi LIBUR on 2026-11-21
+  const jLibur = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', statusJadwal: 'LIBUR', tanggalMulai: '2026-11-21'
+  }, pbTok);
+  assert.equal(jLibur.status, 'success');
+
+  // Updating LIBUR to DIJADWALKAN when employee already has active DIJADWALKAN must fail cross-row check; adding DIJADWALKAN rejected when LIBUR exists
+  const conflictSchedule = pbEnv.ctx.saveJadwalHarian({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisiPenugasan: 'Pickup', jamMasuk: '14:00', jamPulang: '22:00',
+    statusJadwal: 'DIJADWALKAN', tanggalMulai: '2026-11-21'
+  }, pbTok);
+  assert.equal(conflictSchedule.status, 'error', 'Cannot add DIJADWALKAN while LIBUR exists on same date');
+
+  // Future date rejected
+  const futureClose = pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-25' }, pbTok);
+  assert.equal(futureClose.status, 'error');
+
+  // dryRun preview writes nothing
+  const previewClose = pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-21', dryRun: true }, pbTok);
+  assert.equal(previewClose.status, 'success');
+  assert.equal(previewClose.dryRun, true);
+  assert.equal(previewClose.eligibleCount, 1);
+  assert.deepEqual(Array.from(previewClose.eligible).map((e) => e.nama), ['Riska']);
+  assert.equal(pbEnv.sheets.get('DataKetidakhadiran')?.rows.length || 1, 1, 'dryRun must not write ALPA rows');
+
+  // Execute twice -> first marks Riska once, second returns alreadyClosed: true
+  const exec1 = pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-21' }, pbTok);
+  assert.equal(exec1.markedCount, 1);
+  assert.equal(exec1.alreadyClosed, false);
+
+  const exec2 = pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-21' }, pbTok);
+  assert.equal(exec2.markedCount, 0);
+  assert.equal(exec2.alreadyClosed, true);
+  assert.equal(pbEnv.sheets.get('DataKetidakhadiran').rows.length, 2, 'Idempotent closeDailyAttendance must not create duplicate ALPA rows');
+}
+
+// PB-13: getLaporanBulanan canonical merge (HADIR + IZIN + SAKIT + ALPA, no double count, historical NONAKTIF kept)
+{
+  const pbEnv = createGasEnv('2026-11-18T01:00:00.000Z');
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Admin', jamMasuk: '08:00', jamPulang: '20:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+  assert.equal(pbEnv.ctx.savePenempatan({
+    idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
+    posisi: 'Pickup', jamMasuk: '08:00', jamPulang: '17:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    tanggalMulai: '2026-11-01'
+  }, pbTok).status, 'success');
+
+  // Day 18: Riska HADIR (08:00 -> 20:00), Siti SAKIT via processForm (syncs DataKetidakhadiran + Data_Absensi)
+  pbEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' });
+  pbEnv.ctx.processForm({ nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Sakit', alasan: 'Flu berat' });
+  pbEnv.setTimeIso('2026-11-18T13:00:00.000Z'); // 20:00 WIB
+  pbEnv.ctx.processForm({ nama: 'Riska', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' });
+
+  // Owner marks Budi ALPA on 18 Nov, AND manually records SAKIT for Riska on 18 Nov to test no double-count when HADIR exists
+  const pbTok2 = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  pbEnv.ctx.closeDailyAttendance({ tanggal: '2026-11-18' }, pbTok2);
+  // Seed historical Data_Absensi row from earlier in Nov for Dedi Nonaktif (now NONAKTIF in DataPegawai)
+  pbEnv.sheets.get('Data_Absensi').rows.push([
+    '05/11/2026', 'Dedi Nonaktif', 'Admin', 'YZ_ MDP PASIR JAHA BALARAJA', '08:00', '20:00', '12j 0m', 'TEPAT WAKTU', 'NORMAL', '-', '-', '', '', '-', '-'
+  ]);
+
+  // Day 19: Riska SAKIT via Owner saveKetidakhadiran (DataKetidakhadiran only)
+  pbEnv.ctx.saveKetidakhadiran({
+    tanggal: '2026-11-19', idPegawai: 'EMP001', nama: 'Riska',
+    outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin', status: 'SAKIT', alasan: 'Demam'
+  }, pbTok2);
+
+  const lap = pbEnv.ctx.getLaporanBulanan('2026-11', pbTok2);
+  assert.equal(lap.status, 'success');
+  const lapRiska = lap.data.find((x) => x.nama === 'Riska');
+  const lapBudi = lap.data.find((x) => x.nama === 'Budi Kurir');
+  const lapSiti = lap.data.find((x) => x.nama === 'Siti Magang');
+  const lapDedi = lap.data.find((x) => x.nama === 'Dedi Nonaktif');
+
+  assert.equal(lapRiska.jumlahMasuk, 1);
+  assert.equal(lapRiska.jumlahSakit, 1);
+  assert.equal(lapBudi.jumlahAlpa, 1);
+  assert.equal(lapSiti.jumlahSakit, 1, 'Siti Sakit must count as jumlahSakit=1');
+  assert.equal(lapSiti.jumlahIzin, 0, 'Siti Sakit must NOT be double counted or mislabeled as jumlahIzin');
+  assert.equal(lapDedi.jumlahMasuk, 1, 'Historical NONAKTIF employee record in Nov must be preserved');
+
+  const outBal = lap.dataOutlet.find((o) => o.outlet === 'YZ_ MDP PASIR JAHA BALARAJA');
+  assert.equal(outBal.jumlahMasuk, 2); // Riska + Dedi historical
+  assert.equal(outBal.jumlahSakit, 1); // Riska 19 Nov
+  assert.equal(outBal.jumlahAlpa, 1);  // Budi 18 Nov
+}
+
+// PB-14: Asia/Jakarta midnight boundary (16:45 UTC = 23:45 WIB Day 21 vs 17:15 UTC = 00:15 WIB Day 22)
+{
+  const pbEnv = createGasEnv('2026-11-21T16:45:00.000Z');
+  assert.equal(pbEnv.ctx.getJakartaDateStr(), '21/11/2026');
+  pbEnv.setTimeIso('2026-11-21T17:15:00.000Z');
+  assert.equal(pbEnv.ctx.getJakartaDateStr(), '22/11/2026');
+}
+
+console.log('ALL 16 EXISTING + 18 PHASE A + 14 PHASE B TESTS (48 TOTAL) PASSED SUCCESSFULLY');

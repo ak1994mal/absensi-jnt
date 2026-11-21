@@ -9,9 +9,9 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.9.1` (Siap Deploy GAS & Vercel) |
-| **Terakhir Diperbarui** | 18 November 2026 |
-| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, `node scripts/verify-kode-gs.mjs`) |
+| **Versi Saat Ini** | `v2.9.3` (Phase B Attendance Logic & Data Integrity Audit — Siap Deploy GAS & Vercel) |
+| **Terakhir Diperbarui** | 21 November 2026 |
+| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, Lint, `node scripts/verify-kode-gs.mjs` 48/48) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
 | **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `DataPegawai`, `DataOutlet`, `DataPosisi`, `DataPenempatan`, `JadwalHarian`, `DataKetidakhadiran`, `SnapshotAbsensi`, `AbsenIzin`, `Settings`) + Google Drive API |
 | **Environment Target**| Web App (Mobile & Desktop Browser Responsive) |
@@ -134,6 +134,24 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.9.3] — 21 November 2026
+- **AUDIT & HARDENING — Phase B: Attendance Logic & Data Integrity (`Kode.gs`, `src/kodeGsSource.ts`, `src/types/attendance.ts`, `src/api.ts`, `src/App.tsx`, `KehadiranPegawaiTab.tsx`, `JadwalRotasiTab.tsx`):**
+  - **B1 — Split-Shift & Effective Assignment (`getEffectiveWorkAssignment`):** Memperbaiki resolusi multi-jadwal aktif pada tanggal yang sama dengan pencocokan outlet + jam target/konteks tanpa silent fallback pada jadwal ambigu; menyertakan `BELUM_DIJADWALKAN` jika pegawai aktif belum memiliki `DataPenempatan` maupun `JadwalHarian` aktif; mendukung mode `allowSplitShift` di `saveJadwalHarian` / `JadwalRotasiTab.tsx`.
+  - **B2 — Integritas `DATANG`/`PULANG` & Shift Lintas Tengah Malam (`processForm`):** Validasi pegawai aktif ketat, mencegah `DATANG` saat masih ada shift terbuka di outlet mana pun, mendukung split-shift lewat `completedScheduleIds`, mendukung `PULANG` untuk shift semalam (tanggal kemarin belum pulang), menyinkronkan target jam snapshot ke `Data_Absensi`, dan memblokir `IZIN`/`SAKIT` jika sudah absen `DATANG` hari tersebut.
+  - **B3 — Anti-Duplikasi & Soft-Cancel `IZIN`/`SAKIT` (`DataKetidakhadiran` + `Data_Absensi`):** Deduplikasi `IZIN`/`SAKIT` in-place agar tidak menggandakan baris di `DataKetidakhadiran`, `AbsenIzin`, maupun `Data_Absensi`; `cancelKetidakhadiran` menandai `DIBATALKAN` pada `DataKetidakhadiran` sekaligus menyinkronkan pembatalan baris `IZIN` di `Data_Absensi` dengan audit kolom `P–R` tanpa menghapus histori `DATANG`/`PULANG`.
+  - **B4 & B5 — `BELUM DIJADWALKAN` & Tutup Hari Aman (`closeDailyAttendance`):** Pegawai aktif tanpa `DataPenempatan` maupun `JadwalHarian` aktif (atau sebelum `tanggalAktif`) tampil sebagai `BELUM DIJADWALKAN` dan dikecualikan dari `ALPA` saat Tutup Hari; menambahkan `dryRun` preview, penolakan tanggal masa depan, deteksi `alreadyClosed`, serta ringkasan `partial`/`skipped` pada UI.
+  - **B6 — Konsistensi Agregasi Harian & Bulanan:** `getRingkasanHarian` membaca seluruh record `DataKetidakhadiran` termasuk `SAKIT` dengan normalisasi kunci nama; `getLaporanBulanan` menggabungkan `Data_Absensi` valid dan `DataKetidakhadiran` aktif (`IZIN`, `SAKIT`, `ALPA`, `LIBUR`) tanpa double counting serta tetap menghitung histori pegawai yang kini `NONAKTIF`.
+  - **Verifikasi Otomatis (`scripts/verify-kode-gs.mjs`):** 48/48 skenario lolos (16 regresi lama + 18 Phase A + 14 Phase B `PB-1`..`PB-14`) dan sinkronisasi 100% byte-per-byte `Kode.gs` === `src/kodeGsSource.ts`.
+
+### [v2.9.2] — 21 November 2026
+- **SECURITY — Phase A: Security & Employee Identity Hardening (`Kode.gs`, `src/kodeGsSource.ts`, `src/api.ts`, `src/App.tsx`, Tab Owner):**
+  - **Strict Active Employee Filter (`getActiveEmployeesSafe()`):** Hanya status eksplisit `AKTIF` (trimmed case-insensitive) yang lolos; status kosong, `NONAKTIF`, `NON-AKTIF`, `INACTIVE`, `RESIGN`, atau lainnya dikecualikan tanpa mengubah sheet `DataPegawai`.
+  - **Minimum-Data Serializers (`serializeEmployeePublic`, `serializeEmployeeForOwner`):** Endpoint publik (`getPegawai`, `getPegawaiDetail` publik) hanya menerima field minimal (`idPegawai`, `nama`, `outlet`, `posisi`, `status`, `effectiveAssignment`) tanpa `email`, `noTelepon`, `tanggalAktif`, `tanggalNonAktif`, `placementHistory`, atau `absenceToday`. Field sensitif (`password`, `SidikWajah`, `FaceDescriptor`) tetap dihilangkan di semua endpoint.
+  - **Penghapusan Password Hardcoded `"jntowner"`:** Dihapus dari `getConfiguredOwnerPassword()` di `Kode.gs` dan fallback Preview di `App.tsx`; jika password Owner belum terkonfigurasi di `Settings`/`ScriptProperties`, login ditolak aman (`notConfigured: true`).
+  - **Hardening Sesi & Endpoint Owner via `doPost` + `ownerToken`:** `doGet` menolak `saveSettings`, seluruh endpoint Owner (`getDataPenempatan`, `getRiwayatPenempatan`, `getJadwalHarian`, `getRiwayatRotasi`, `getKehadiranHarian`, `getKetidakhadiran`, `getAbsensiByDate`, `getRingkasanHarian`, `getLaporanBulanan`), dan setiap query parameter `ownerToken`/`token`. `checkOwnerToken` fail-closed pada cache/properti rusak, dan `ownerLogout` memvalidasi pencabutan token di `CacheService` maupun `PropertiesService`.
+  - **Frontend Session Hardening:** Token sesi Owner dan state `isOwnerLoggedIn` hanya disimpan di memory/`sessionStorage` (membersihkan `localStorage`), fallback GET `saveSettings` dihapus, `verifyOwnerSessionApi` fail-closed saat jaringan gagal, dan seluruh tab Owner menangani `authRequired`.
+  - **Verifikasi Otomatis (`scripts/verify-kode-gs.mjs`):** 16 skenario regresi lama + 18 skenario Phase A (`PA-1`..`PA-18`) lolos seluruhnya.
 
 ### [v2.9.1] — 18 November 2026
 - **FEATURE — Koreksi Absensi Manual & Audit Trail (`KoreksiAbsensiTab.tsx` & `Kode.gs`):**

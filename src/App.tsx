@@ -20,6 +20,8 @@ import {
   ownerLogoutApi,
   verifyOwnerSessionApi,
   fetchPegawaiDetailApi,
+  fetchRingkasanHarianApi,
+  fetchLaporanBulananApi,
   DEFAULT_OFFLINE_PEGAWAI,
   DEFAULT_OFFLINE_SETTINGS
 } from './api';
@@ -418,7 +420,10 @@ export default function App() {
     return (localStorage.getItem("activeTab") as 'absen' | 'owner') || 'absen';
   });
   const [isOwnerLoggedIn, setIsOwnerLoggedIn] = useState(() => {
-    return localStorage.getItem("isOwnerLoggedIn") === "true" && !!getOwnerToken();
+    try {
+      localStorage.removeItem("isOwnerLoggedIn");
+    } catch (e) {}
+    return !!getOwnerToken();
   });
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerLoginError, setOwnerLoginError] = useState("");
@@ -1102,9 +1107,12 @@ export default function App() {
 
     try {
       console.log(`[fetchRingkasanHarian] Memuat ringkasan tanggal (${targetYmd})...`);
-      const res = await fetchWithRetry(`${GAS_URL}?action=getRingkasanHarian&tanggal=${encodeURIComponent(targetYmd)}`);
-      const data = await parseApiResponse(res, 'getRingkasanHarian');
-      
+      const data = await fetchRingkasanHarianApi(targetYmd);
+      if (data?.authRequired) {
+        handleRequireOwnerReauth();
+        toast.error(data.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (data.status === 'success') {
         console.log(`[fetchRingkasanHarian] Berhasil mendapat ${data.data?.length} ringkasan harian.`);
         const formattedData = (data.data || []).map((r: any) => ({
@@ -1140,60 +1148,19 @@ export default function App() {
     setLoadingLaporan(true);
     setErrorLaporan("");
     if (!GAS_URL) {
-      setTimeout(() => {
-        setLaporanBulanan([
-          { 
-            nama: "Mohammad Danang", 
-            posisi: "Admin",
-            totalJamKerja: "145j 30m",
-            jumlahJamLembur: 3,
-            jumlahTelat: 2,
-            jumlahMasuk: 20
-          },
-          { 
-            nama: "Fitri Fajria", 
-            posisi: "Pickup",
-            totalJamKerja: "135j 15m",
-            jumlahJamLembur: 0,
-            jumlahTelat: 5,
-            jumlahMasuk: 18
-          },
-        ]);
-        setLaporanBulananOutlet([
-          {
-            outlet: "YZ_ MDP PASIR JAHA BALARAJA",
-            totalJamKerja: "145j 30m",
-            jumlahJamLembur: 3,
-            jumlahTelat: 2,
-            jumlahMasuk: 20,
-            jumlahIzin: 0,
-            daftarPegawai: [
-              { nama: "Mohammad Danang", posisi: "Admin", totalJamKerja: "145j 30m", jumlahJamLembur: 3, jumlahTelat: 2, jumlahMasuk: 20 }
-            ]
-          },
-          {
-            outlet: "YZ_ MDP JAYANTI CIKANDE",
-            totalJamKerja: "135j 15m",
-            jumlahJamLembur: 0,
-            jumlahTelat: 5,
-            jumlahMasuk: 18,
-            jumlahIzin: 1,
-            daftarPegawai: [
-              { nama: "Fitri Fajria", posisi: "Pickup", totalJamKerja: "135j 15m", jumlahJamLembur: 0, jumlahTelat: 5, jumlahMasuk: 18 }
-            ]
-          }
-        ]);
-        setLoadingLaporan(false);
-      }, 800);
+      setErrorLaporan("URL Google Apps Script belum terkonfigurasi.");
+      setLoadingLaporan(false);
       return;
     }
 
-
     try {
       console.log(`[fetchLaporanBulanan] Memuat laporan untuk bulan ${bulan}...`);
-      const res = await fetchWithRetry(`${GAS_URL}?action=getLaporanBulanan&bulan=${bulan}`);
-      const data = await parseApiResponse(res, 'getLaporanBulanan');
-      
+      const data = await fetchLaporanBulananApi(bulan);
+      if (data?.authRequired) {
+        handleRequireOwnerReauth();
+        toast.error(data.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (data.status === 'success') {
         console.log(`[fetchLaporanBulanan] Berhasil mendapatkan laporan ${data.data?.length} pegawai.`);
         setLaporanBulanan(data.data || []);
@@ -1203,53 +1170,13 @@ export default function App() {
         throw new Error(data.message || 'Unknown error');
       }
     } catch (e: any) {
-      console.warn(`[fetchLaporanBulanan] Mode offline / fallback:`, e?.message || e);
-      setLaporanBulanan([
-        { 
-          nama: "Mohammad Danang", 
-          posisi: "Admin",
-          totalJamKerja: "145j 30m",
-          jumlahJamLembur: 3,
-          jumlahTelat: 2,
-          jumlahMasuk: 20
-        },
-        { 
-          nama: "Fitri Fajria", 
-          posisi: "Pickup",
-          totalJamKerja: "135j 15m",
-          jumlahJamLembur: 0,
-          jumlahTelat: 5,
-          jumlahMasuk: 18
-        },
-      ]);
-      setLaporanBulananOutlet([
-        {
-          outlet: "YZ_ MDP PASIR JAHA BALARAJA",
-          totalJamKerja: "145j 30m",
-          jumlahJamLembur: 3,
-          jumlahTelat: 2,
-          jumlahMasuk: 20,
-          jumlahIzin: 0,
-          daftarPegawai: [
-            { nama: "Mohammad Danang", posisi: "Admin", totalJamKerja: "145j 30m", jumlahJamLembur: 3, jumlahTelat: 2, jumlahMasuk: 20 }
-          ]
-        },
-        {
-          outlet: "YZ_ MDP JAYANTI CIKANDE",
-          totalJamKerja: "135j 15m",
-          jumlahJamLembur: 0,
-          jumlahTelat: 5,
-          jumlahMasuk: 18,
-          jumlahIzin: 1,
-          daftarPegawai: [
-            { nama: "Fitri Fajria", posisi: "Pickup", totalJamKerja: "135j 15m", jumlahJamLembur: 0, jumlahTelat: 5, jumlahMasuk: 18 }
-          ]
-        }
-      ]);
+      console.warn(`[fetchLaporanBulanan] Gagal memuat laporan bulanan:`, e?.message || e);
+      setLaporanBulanan([]);
+      setLaporanBulananOutlet([]);
       if (isAbortError(e)) {
-        setErrorLaporan("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
+        setErrorLaporan("Koneksi timeout, sinyal mungkin lemah. Silakan coba lagi.");
       } else {
-        setErrorLaporan("");
+        setErrorLaporan(e?.message || "Gagal memuat laporan bulanan.");
       }
     } finally {
       setLoadingLaporan(false);
@@ -1261,12 +1188,23 @@ export default function App() {
   const handleRequireOwnerReauth = () => {
     setOwnerToken("");
     setIsOwnerLoggedIn(false);
-    localStorage.removeItem("isOwnerLoggedIn");
+    setOwnerPasswordInput("");
+    try {
+      localStorage.removeItem("isOwnerLoggedIn");
+    } catch (e) {}
   };
 
   const sendSaveSettings = async (data: any, urlOverride?: string) => {
     const targetUrl = urlOverride || getActiveGasUrl();
     const ownerToken = getOwnerToken();
+    if (!ownerToken) {
+      handleRequireOwnerReauth();
+      return {
+        status: 'error',
+        authRequired: true,
+        message: 'Sesi Owner diperlukan. Silakan login Owner terlebih dahulu.'
+      };
+    }
     const payload = {
       action: 'saveSettings',
       ownerToken,
@@ -1283,25 +1221,14 @@ export default function App() {
       }
       return parsed;
     } catch (err: any) {
-      console.warn("[saveSettings] POST error, trying GET fallback:", err?.message || err);
-      try {
-        const url = `${targetUrl}?action=saveSettings&ownerToken=${encodeURIComponent(ownerToken)}&data=${encodeURIComponent(JSON.stringify(data))}`;
-        const response = await fetchWithTimeout(url, { cache: 'no-store' }, 20000);
-        const parsed = await parseApiResponse(response, 'saveSettings');
-        if (parsed?.authRequired) {
-          handleRequireOwnerReauth();
-        }
-        return parsed;
-      } catch (getErr: any) {
-        console.warn("[saveSettings] GET fallback failed:", getErr?.message || getErr);
-        const isTimeout = isAbortError(getErr) || isAbortError(err);
-        return {
-          status: 'error',
-          message: isTimeout 
-            ? 'Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...' 
-            : (getErr?.message || 'Gagal terhubung ke Google Apps Script')
-        };
-      }
+      console.warn("[saveSettings] POST error:", err?.message || err);
+      const isTimeout = isAbortError(err);
+      return {
+        status: 'error',
+        message: isTimeout
+          ? 'Koneksi timeout, sinyal mungkin lemah. Pengaturan gagal disimpan, silakan coba lagi.'
+          : (err?.message || 'Gagal terhubung ke Google Apps Script')
+      };
     }
   };
 
@@ -1687,24 +1614,40 @@ export default function App() {
     }
   }, [nama, effectiveAssignment, openAttendanceToday]);
 
-  // Verifikasi token sesi Owner saat membuka panel Owner
+  // Verifikasi token sesi Owner saat membuka panel Owner atau saat awal dimuat (fail-closed pada error jaringan)
   useEffect(() => {
-    if (activeTab === 'owner' && isOwnerLoggedIn && GAS_URL) {
+    let active = true;
+    if (isOwnerLoggedIn) {
+      if (!GAS_URL) {
+        handleRequireOwnerReauth();
+        return;
+      }
       const tok = getOwnerToken();
       if (!tok) {
         handleRequireOwnerReauth();
         return;
       }
-      verifyOwnerSessionApi(tok)
-        .then((res) => {
-          if (res?.status !== 'success' || res?.valid === false) {
+      if (activeTab === 'owner') {
+        verifyOwnerSessionApi(tok)
+          .then((res) => {
+            if (!active) return;
+            if (res?.status !== 'success' || res?.valid !== true) {
+              handleRequireOwnerReauth();
+              toast.info(res?.message || 'Sesi Owner sudah berakhir. Silakan login kembali.');
+            }
+          })
+          .catch(() => {
+            if (!active) return;
             handleRequireOwnerReauth();
-            toast.info('Sesi Owner sudah berakhir. Silakan login kembali.');
-          }
-        })
-        .catch(() => {});
+            setOwnerLoginError('Gagal memverifikasi sesi Owner dengan server. Silakan login ulang.');
+            toast.error('Gagal memverifikasi sesi Owner. Silakan login kembali.');
+          });
+      }
     }
-  }, [activeTab]);
+    return () => {
+      active = false;
+    };
+  }, [activeTab, isOwnerLoggedIn, GAS_URL]);
 
   useEffect(() => {
     if (activeTab === 'owner' && isOwnerLoggedIn) {
@@ -2099,30 +2042,24 @@ export default function App() {
   const handleOwnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setOwnerLoginError("");
-    if (!ownerPasswordInput.trim()) {
+    const submittedPassword = ownerPasswordInput;
+    if (!submittedPassword.trim()) {
       setOwnerLoginError("Masukkan password Owner.");
       return;
     }
 
     if (!GAS_URL) {
-      if (ownerPasswordInput === "jntowner") {
-        setOwnerToken("preview-local-token");
-        setIsOwnerLoggedIn(true);
-        localStorage.setItem("isOwnerLoggedIn", "true");
-        setOwnerPasswordInput("");
-      } else {
-        setOwnerLoginError("Password salah!");
-      }
+      setOwnerPasswordInput("");
+      setOwnerLoginError("URL Google Apps Script belum terkonfigurasi. Login Owner memerlukan koneksi backend GAS.");
       return;
     }
 
     setOwnerLoginLoading(true);
     try {
-      const res = await ownerLoginApi(ownerPasswordInput);
+      const res = await ownerLoginApi(submittedPassword);
       if (res?.status === "success" && res?.token) {
         setOwnerToken(res.token);
         setIsOwnerLoggedIn(true);
-        localStorage.setItem("isOwnerLoggedIn", "true");
         setOwnerPasswordInput("");
         setOwnerLoginError("");
         toast.success("Login Owner berhasil.");
@@ -2238,15 +2175,25 @@ export default function App() {
               )}
               {nama && effectiveAssignment && !loadingAssignment && (
                 <div className={`mt-2 p-2.5 rounded-md border text-xs ${
-                  effectiveAssignment.statusJadwal === 'LIBUR'
+                  effectiveAssignment.ambiguous
+                    ? 'bg-red-50 border-red-200 text-red-900'
+                    : effectiveAssignment.statusJadwal === 'LIBUR' || effectiveAssignment.statusJadwal === 'BELUM_DIJADWALKAN'
                     ? 'bg-amber-50 border-amber-200 text-amber-900'
                     : effectiveAssignment.jenisPenugasan !== 'NORMAL'
                     ? 'bg-blue-50 border-blue-200 text-blue-900'
                     : 'bg-neutral-50 border-neutral-200 text-neutral-700'
                 }`}>
-                  {effectiveAssignment.statusJadwal === 'LIBUR' ? (
+                  {effectiveAssignment.ambiguous ? (
+                    <p>
+                      <strong>Perlu Konfirmasi Jadwal:</strong> {effectiveAssignment.ambiguityReason || 'Terdapat lebih dari satu jadwal aktif hari ini.'}
+                    </p>
+                  ) : effectiveAssignment.statusJadwal === 'LIBUR' ? (
                     <p>
                       <strong>Jadwal Hari Ini: LIBUR</strong> — Anda tetap diperbolehkan absen jika lembur atau tukar shift.
+                    </p>
+                  ) : effectiveAssignment.statusJadwal === 'BELUM_DIJADWALKAN' ? (
+                    <p>
+                      <strong>Status Jadwal: BELUM DIJADWALKAN</strong> — Pilih outlet & posisi penugasan secara manual jika diperbantukan hari ini.
                     </p>
                   ) : (
                     <p>
@@ -2689,15 +2636,19 @@ export default function App() {
             </h1>
             {isOwnerLoggedIn && (
                <button
-                  onClick={() => {
+                  onClick={async () => {
                     const tok = getOwnerToken();
                     if (GAS_URL && tok) {
-                      ownerLogoutApi(tok).catch(() => {});
+                      try {
+                        const res = await ownerLogoutApi(tok);
+                        if (res?.status !== 'success') {
+                          toast.warning(res?.message || 'Pencabutan sesi server terkendala; sesi lokal dibersihkan.');
+                        }
+                      } catch {
+                        toast.warning('Gagal menghubungi server saat logout; sesi lokal dibersihkan.');
+                      }
                     }
-                    setOwnerToken("");
-                    setIsOwnerLoggedIn(false);
-                    localStorage.removeItem("isOwnerLoggedIn");
-                    setOwnerPasswordInput("");
+                    handleRequireOwnerReauth();
                     setOwnerView('harian');
                   }}
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:bg-[#a30000] p-2 rounded-lg transition cursor-pointer"
@@ -2852,6 +2803,7 @@ export default function App() {
                       <option value="ALL">Semua Status</option>
                       <option value="HADIR">HADIR</option>
                       <option value="BELUM ABSEN">BELUM ABSEN</option>
+                      <option value="BELUM DIJADWALKAN">BELUM DIJADWALKAN</option>
                       <option value="LIBUR">LIBUR</option>
                       <option value="IZIN">IZIN</option>
                       <option value="SAKIT">SAKIT</option>
@@ -3495,6 +3447,11 @@ export default function App() {
                                 </td>
                                 <td className="px-5 py-4">
                                   <div className="font-medium text-neutral-700">{row.jumlahMasuk || 0} hari</div>
+                                  {((row.jumlahIzin || 0) + (row.jumlahSakit || 0) + (row.jumlahAlpa || 0)) > 0 && (
+                                    <div className="text-[11px] text-neutral-500 mt-0.5">
+                                      Izin: {row.jumlahIzin || 0} • Sakit: {row.jumlahSakit || 0} • ALPA: {row.jumlahAlpa || 0}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="px-5 py-4 text-center">
                                   {row.jumlahTelat > 0 ? (
@@ -3539,6 +3496,11 @@ export default function App() {
                               <div className="bg-neutral-50 px-2 py-3 rounded-lg border border-neutral-100 text-center flex flex-col justify-center">
                                 <p className="text-[10px] text-neutral-500 font-semibold mb-0.5">KEHADIRAN</p>
                                 <p className="font-bold text-sm text-neutral-800">{row.jumlahMasuk || 0} hr</p>
+                                {((row.jumlahIzin || 0) + (row.jumlahSakit || 0) + (row.jumlahAlpa || 0)) > 0 && (
+                                  <p className="text-[9px] text-neutral-500 mt-0.5">
+                                    I:{row.jumlahIzin || 0} S:{row.jumlahSakit || 0} A:{row.jumlahAlpa || 0}
+                                  </p>
+                                )}
                               </div>
                               <div className="bg-neutral-50 px-2 py-3 rounded-lg border border-neutral-100 text-center flex flex-col justify-center">
                                 <p className="text-[10px] text-neutral-500 font-semibold mb-0.5">TOT. KERJA</p>
@@ -3603,7 +3565,10 @@ export default function App() {
                                 </div>
                                 <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-sm">
                                   <p className="text-[10px] font-bold text-neutral-450 uppercase tracking-wider mb-1">TOTAL IZIN/SAKIT</p>
-                                  <p className="text-xl font-black text-amber-500">{out.jumlahIzin || 0} <span className="text-xs font-normal text-neutral-500">Hari</span></p>
+                                  <p className="text-xl font-black text-amber-500">{(out.jumlahIzin || 0) + (out.jumlahSakit || 0)} <span className="text-xs font-normal text-neutral-500">Hari</span></p>
+                                  {(out.jumlahAlpa || 0) > 0 && (
+                                    <p className="text-[10px] font-bold text-red-600 mt-0.5">ALPA: {out.jumlahAlpa} Hari</p>
+                                  )}
                                 </div>
                               </div>
 

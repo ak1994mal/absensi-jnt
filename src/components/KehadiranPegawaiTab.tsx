@@ -51,6 +51,7 @@ interface KehadiranPegawaiTabProps {
 const STATUS_BADGE_MAP: Record<StatusKehadiranHarian, string> = {
   HADIR: 'bg-emerald-100 text-emerald-800 border-emerald-200',
   'BELUM ABSEN': 'bg-amber-100 text-amber-900 border-amber-300',
+  'BELUM DIJADWALKAN': 'bg-neutral-100 text-neutral-500 border-neutral-300',
   LIBUR: 'bg-neutral-100 text-neutral-700 border-neutral-200',
   IZIN: 'bg-blue-100 text-blue-800 border-blue-200',
   SAKIT: 'bg-indigo-100 text-indigo-800 border-indigo-200',
@@ -108,6 +109,11 @@ export default function KehadiranPegawaiTab({
     setError('');
     try {
       const res = await fetchKehadiranHarianApi(dateVal);
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (res?.status === 'success') {
         setRows(Array.isArray(res.data) ? res.data : []);
         setSummary(res.summary || null);
@@ -283,7 +289,11 @@ export default function KehadiranPegawaiTab({
       if (res?.status !== 'success') {
         throw new Error(res?.message || 'Gagal menutup pemeriksaan harian.');
       }
-      toast.success(res.message || 'Pemeriksaan harian berhasil ditutup.');
+      if (res.partial) {
+        toast.warning(res.message || 'Pemeriksaan harian selesai sebagian.', { duration: 7000 });
+      } else {
+        toast.success(res.message || 'Pemeriksaan harian berhasil ditutup.');
+      }
       setCloseModalOpen(false);
       await loadData(selectedDate);
       onDataChanged?.();
@@ -405,6 +415,7 @@ export default function KehadiranPegawaiTab({
           <option value="ALL">Semua Status Kehadiran</option>
           <option value="HADIR">HADIR</option>
           <option value="BELUM ABSEN">BELUM ABSEN</option>
+          <option value="BELUM DIJADWALKAN">BELUM DIJADWALKAN</option>
           <option value="LIBUR">LIBUR</option>
           <option value="IZIN">IZIN</option>
           <option value="SAKIT">SAKIT</option>
@@ -784,7 +795,7 @@ export default function KehadiranPegawaiTab({
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-4 text-xs" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-bold text-base text-neutral-900">Batalkan Catatan Ketidakhadiran?</h3>
             <p className="text-neutral-600 leading-relaxed">
-              Catatan <strong>{cancelTarget.statusKehadiran}</strong> untuk <strong>{cancelTarget.nama}</strong> pada {cancelTarget.tanggal} akan dihapus dari <strong>DataKetidakhadiran</strong>. Transaksi asli di <strong>Data_Absensi</strong> tidak akan dihapus.
+              Catatan <strong>{cancelTarget.statusKehadiran}</strong> untuk <strong>{cancelTarget.nama}</strong> pada {cancelTarget.tanggal} akan ditandai <strong>DIBATALKAN</strong> di DataKetidakhadiran (dan baris sinkron IZIN terkait di Data_Absensi jika ada). Transaksi absensi hadir DATANG/PULANG tidak akan tersentuh.
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={() => setCancelTarget(null)} className="px-3.5 py-2 bg-neutral-100 rounded-md font-semibold cursor-pointer">Tutup</button>

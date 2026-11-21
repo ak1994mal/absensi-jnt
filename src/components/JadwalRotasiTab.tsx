@@ -91,6 +91,7 @@ export default function JadwalRotasiTab({
   const [formTanggalMulai, setFormTanggalMulai] = useState(todayYmd);
   const [formTanggalAkhir, setFormTanggalAkhir] = useState(todayYmd);
   const [formCatatan, setFormCatatan] = useState('');
+  const [formAllowSplitShift, setFormAllowSplitShift] = useState(false);
   const [confirmConflictIzin, setConfirmConflictIzin] = useState(false);
   const [confirmAfterDatang, setConfirmAfterDatang] = useState(false);
   const [pendingWarningMsg, setPendingWarningMsg] = useState('');
@@ -132,6 +133,11 @@ export default function JadwalRotasiTab({
     setError('');
     try {
       const res = await fetchJadwalHarianApi(dateVal);
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (res?.status === 'success') {
         setJadwalRows(Array.isArray(res.jadwal) ? res.jadwal : []);
         setEffectiveSchedules(Array.isArray(res.effectiveSchedules) ? res.effectiveSchedules : []);
@@ -177,6 +183,7 @@ export default function JadwalRotasiTab({
     setFormTanggalMulai(selectedDate);
     setFormTanggalAkhir(selectedDate);
     setFormCatatan('');
+    setFormAllowSplitShift(false);
     setConfirmConflictIzin(false);
     setConfirmAfterDatang(false);
     setPendingWarningMsg('');
@@ -212,6 +219,7 @@ export default function JadwalRotasiTab({
         tanggalMulai: formTanggalMulai,
         tanggalAkhir: formTanggalAkhir || formTanggalMulai,
         catatan: formCatatan,
+        allowSplitShift: addMode === 'DIJADWALKAN' ? formAllowSplitShift : false,
         confirmConflictIzin,
         confirmAfterDatang
       });
@@ -342,8 +350,15 @@ export default function JadwalRotasiTab({
         outlet: historyOutlet || undefined,
         nama: historyNama || undefined
       });
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (res?.status === 'success') {
         setHistoryRows(Array.isArray(res.data) ? res.data : []);
+      } else {
+        throw new Error(res?.message || 'Gagal memuat riwayat rotasi.');
       }
     } catch (err: any) {
       toast.error(err?.message || 'Gagal memuat riwayat rotasi.');
@@ -837,6 +852,15 @@ export default function JadwalRotasiTab({
                       />
                     </div>
                   </div>
+                  <label className="flex items-center gap-2 text-[11px] font-medium text-neutral-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formAllowSplitShift}
+                      onChange={(e) => setFormAllowSplitShift(e.target.checked)}
+                      className="accent-[#cc0000]"
+                    />
+                    <span>Izinkan Split Shift (jadwal ganda non-bentrok pada tanggal yang sama)</span>
+                  </label>
                 </>
               )}
 

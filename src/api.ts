@@ -137,23 +137,33 @@ export const DEFAULT_OFFLINE_SETTINGS = {
 // ==================== OWNER AUTH SESSION HELPERS ====================
 
 const OWNER_TOKEN_STORAGE_KEY = "jnt_owner_session_token";
+let ownerTokenMemory = "";
 
 export function getOwnerToken(): string {
+  if (ownerTokenMemory) return ownerTokenMemory;
   try {
-    return sessionStorage.getItem(OWNER_TOKEN_STORAGE_KEY) || localStorage.getItem(OWNER_TOKEN_STORAGE_KEY) || "";
+    localStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
+  } catch (e) {}
+  try {
+    const tok = sessionStorage.getItem(OWNER_TOKEN_STORAGE_KEY) || "";
+    ownerTokenMemory = tok;
+    return tok;
   } catch (e) {
-    return "";
+    return ownerTokenMemory;
   }
 }
 
 export function setOwnerToken(token: string): void {
+  const clean = token ? String(token).trim() : "";
+  ownerTokenMemory = clean;
   try {
-    if (token) {
-      sessionStorage.setItem(OWNER_TOKEN_STORAGE_KEY, token);
-      localStorage.setItem(OWNER_TOKEN_STORAGE_KEY, token);
+    localStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
+  } catch (e) {}
+  try {
+    if (clean) {
+      sessionStorage.setItem(OWNER_TOKEN_STORAGE_KEY, clean);
     } else {
       sessionStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
-      localStorage.removeItem(OWNER_TOKEN_STORAGE_KEY);
     }
   } catch (e) {}
 }
@@ -192,14 +202,20 @@ async function gasGet(action: string, params: Record<string, string | undefined>
   throw normalizeApiError(lastErr, `Gagal memuat ${action}`);
 }
 
-async function gasPost(action: string, data: any = {}, includeOwnerToken = true, timeoutMs = 20000): Promise<any> {
+async function gasPost(
+  action: string,
+  data: any = {},
+  includeOwnerToken = true,
+  timeoutMs = 20000,
+  tokenOverride?: string
+): Promise<any> {
   const baseUrl = getActiveGasUrl();
   if (!baseUrl) {
     throw new Error("URL Google Apps Script belum terkonfigurasi.");
   }
   const payload: any = { action, data };
   if (includeOwnerToken) {
-    payload.ownerToken = getOwnerToken();
+    payload.ownerToken = tokenOverride !== undefined ? tokenOverride : getOwnerToken();
   }
   try {
     const res = await fetchWithTimeout(
@@ -221,21 +237,22 @@ export async function ownerLoginApi(password: string) {
 }
 
 export async function ownerLogoutApi(token?: string) {
-  return gasPost('ownerLogout', { ownerToken: token || getOwnerToken() }, true, 15000);
+  const tok = token || getOwnerToken();
+  return gasPost('ownerLogout', {}, true, 15000, tok);
 }
 
 export async function verifyOwnerSessionApi(token?: string) {
   const tok = token || getOwnerToken();
-  if (!tok) return { status: 'error', valid: false, message: 'Token tidak tersedia' };
-  return gasGet('verifyOwnerSession', { token: tok }, 15000);
+  if (!tok) return { status: 'error', valid: false, authRequired: true, message: 'Token tidak tersedia' };
+  return gasPost('verifyOwnerSession', {}, true, 15000, tok);
 }
 
 export async function fetchDataPenempatanApi() {
-  return gasGet('getDataPenempatan');
+  return gasPost('getDataPenempatan', {}, true, 20000);
 }
 
 export async function fetchRiwayatPenempatanApi(idPegawai?: string, nama?: string) {
-  return gasGet('getRiwayatPenempatan', { idPegawai, nama });
+  return gasPost('getRiwayatPenempatan', { idPegawai, nama }, true, 20000);
 }
 
 export async function savePenempatanApi(data: any) {
@@ -243,11 +260,11 @@ export async function savePenempatanApi(data: any) {
 }
 
 export async function fetchJadwalHarianApi(tanggal: string) {
-  return gasGet('getJadwalHarian', { tanggal });
+  return gasPost('getJadwalHarian', { tanggal }, true, 20000);
 }
 
 export async function fetchRiwayatRotasiApi(params?: { nama?: string; outlet?: string; bulan?: string }) {
-  return gasGet('getRiwayatRotasi', params || {});
+  return gasPost('getRiwayatRotasi', params || {}, true, 20000);
 }
 
 export async function saveJadwalHarianApi(data: any) {
@@ -263,11 +280,11 @@ export async function cancelJadwalHarianApi(data: any) {
 }
 
 export async function fetchKehadiranHarianApi(tanggal: string) {
-  return gasGet('getKehadiranHarian', { tanggal });
+  return gasPost('getKehadiranHarian', { tanggal }, true, 20000);
 }
 
 export async function fetchKetidakhadiranApi(params?: { tanggal?: string; bulan?: string; nama?: string; outlet?: string }) {
-  return gasGet('getKetidakhadiran', params || {});
+  return gasPost('getKetidakhadiran', params || {}, true, 20000);
 }
 
 export async function saveKetidakhadiranApi(data: any) {
@@ -284,7 +301,7 @@ export async function cancelKetidakhadiranApi(data: any) {
   return gasPost('cancelKetidakhadiran', data, true, 20000);
 }
 
-export async function closeDailyAttendanceApi(data: { tanggal: string; alasan?: string; targetNames?: string[] }) {
+export async function closeDailyAttendanceApi(data: { tanggal: string; alasan?: string; targetNames?: string[]; dryRun?: boolean; preview?: boolean }) {
   return gasPost('closeDailyAttendance', data, true, 25000);
 }
 
@@ -292,15 +309,23 @@ export async function fetchPegawaiDetailApi(nama: string, idPegawai?: string, ta
   return gasGet('getPegawaiDetail', { nama, idPegawai, tanggal }, 15000);
 }
 
+export async function fetchRingkasanHarianApi(tanggal?: string) {
+  return gasPost('getRingkasanHarian', { tanggal }, true, 20000);
+}
+
+export async function fetchLaporanBulananApi(bulan?: string) {
+  return gasPost('getLaporanBulanan', { bulan }, true, 20000);
+}
+
 export async function getAbsensiByDate(params: { tanggal?: string; outlet?: string; search?: string } = {}) {
-  return gasGet(
+  return gasPost(
     'getAbsensiByDate',
     {
       tanggal: params.tanggal,
       outlet: params.outlet,
-      search: params.search,
-      ownerToken: getOwnerToken()
+      search: params.search
     },
+    true,
     20000
   );
 }

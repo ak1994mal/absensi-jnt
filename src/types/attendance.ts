@@ -95,15 +95,20 @@ export interface EffectiveWorkAssignment {
   jamMasukEfektif: string;
   jamPulangEfektif: string;
   jenisPenugasan: JenisPenugasan;
-  statusJadwal: StatusJadwal;
+  statusJadwal: StatusJadwal | 'BELUM_DIJADWALKAN';
   hariKerja: DayCode[];
-  sumberJadwal: 'JADWAL_HARIAN' | 'DATA_PENEMPATAN' | 'DATA_POSISI';
+  sumberJadwal: 'JADWAL_HARIAN' | 'DATA_PENEMPATAN' | 'DATA_POSISI' | 'BELUM_DIJADWALKAN';
   idJadwal?: string;
   hasPlacement: boolean;
   isWorkDay: boolean;
+  isScheduledToWork?: boolean;
+  multipleSchedules?: boolean;
+  ambiguous?: boolean;
+  ambiguityReason?: string;
+  outletMismatch?: boolean;
 }
 
-export type StatusKehadiranHarian = 'HADIR' | 'BELUM ABSEN' | 'LIBUR' | 'IZIN' | 'SAKIT' | 'ALPA';
+export type StatusKehadiranHarian = 'HADIR' | 'BELUM ABSEN' | 'BELUM DIJADWALKAN' | 'LIBUR' | 'IZIN' | 'SAKIT' | 'ALPA';
 
 export interface KehadiranHarianRow {
   idPegawai: string;
@@ -132,6 +137,10 @@ export interface KehadiranHarianRow {
   buktiDokumen: string;
   dicatatOleh?: string;
   hasPlacement: boolean;
+  isScheduledToWork?: boolean;
+  multipleSchedules?: boolean;
+  ambiguousSchedule?: boolean;
+  shiftCount?: number;
   missingId: boolean;
   duplicateName: boolean;
   hasScheduleConflict: boolean;
@@ -143,6 +152,7 @@ export interface KehadiranSummaryStats {
   totalDijadwalkan: number;
   hadir: number;
   belumAbsen: number;
+  belumDijadwalkan?: number;
   libur: number;
   izin: number;
   sakit: number;
