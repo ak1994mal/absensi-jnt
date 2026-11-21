@@ -85,14 +85,14 @@ export default function EmployeeLogin({ gasUrlConfigured, onLoginSuccess }: Empl
               type="text"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              placeholder="Contoh: Riska atau EMP001"
+              placeholder="Contoh: Rahma Putri atau JT0101008"
               autoComplete="username"
               disabled={loading}
               className="w-full min-h-[44px] pl-10 pr-3.5 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-sm text-neutral-900 focus:ring-2 focus:ring-[#cc0000] focus:border-[#cc0000] focus:bg-white outline-none transition"
             />
           </div>
           <p className="text-[11px] text-neutral-500 mt-1">
-            Jika ada nama pegawai yang sama, gunakan ID Pegawai Anda.
+            Saran: gunakan ID Pegawai Anda.
           </p>
         </div>
 
@@ -139,7 +139,7 @@ export default function EmployeeLogin({ gasUrlConfigured, onLoginSuccess }: Empl
           className="w-full min-h-[48px] bg-[#cc0000] hover:bg-[#a30000] active:scale-[0.99] text-white font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
         >
           <Lock className="w-4 h-4" />
-          <span>{loading ? 'Memverifikasi...' : 'Masuk ke Form Absensi'}</span>
+          <span>{loading ? 'Memverifikasi...' : 'Login'}</span>
         </button>
 
         <div className="pt-2 border-t border-neutral-100 text-[11px] text-neutral-500 leading-relaxed text-center">
