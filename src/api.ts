@@ -134,10 +134,37 @@ export const DEFAULT_OFFLINE_SETTINGS = {
   gasUrl: ""
 };
 
-// ==================== OWNER AUTH SESSION HELPERS ====================
+// ==================== OWNER & EMPLOYEE AUTH SESSION HELPERS ====================
 
 const OWNER_TOKEN_STORAGE_KEY = "jnt_owner_session_token";
+const EMPLOYEE_TOKEN_STORAGE_KEY = "jnt_employee_token";
+const EMPLOYEE_SESSION_STORAGE_KEY = "jnt_employee_session";
+const DEVICE_ID_STORAGE_KEY = "jnt_device_id";
 let ownerTokenMemory = "";
+
+export function getDeviceId(): string {
+  try {
+    let existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing && existing.trim()) return existing.trim();
+    const randomPart =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID().replace(/-/g, "").slice(0, 16)
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const id = `dev-${randomPart}`;
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+    return id;
+  } catch (e) {
+    return "dev-ephemeral";
+  }
+}
+
+function getUserAgentHint(): string {
+  try {
+    return typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent.slice(0, 140) : "Browser";
+  } catch (e) {
+    return "Browser";
+  }
+}
 
 export function getOwnerToken(): string {
   if (ownerTokenMemory) return ownerTokenMemory;
@@ -168,6 +195,62 @@ export function setOwnerToken(token: string): void {
   } catch (e) {}
 }
 
+export function getEmployeeToken(): string {
+  try {
+    return localStorage.getItem(EMPLOYEE_TOKEN_STORAGE_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+export function setEmployeeSession(session: {
+  employeeToken: string;
+  nama: string;
+  idPegawai?: string;
+  outlet?: string;
+  posisi?: string;
+  expiresAt?: number;
+} | null): void {
+  try {
+    if (!session || !session.employeeToken) {
+      localStorage.removeItem(EMPLOYEE_TOKEN_STORAGE_KEY);
+      localStorage.removeItem(EMPLOYEE_SESSION_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(EMPLOYEE_TOKEN_STORAGE_KEY, session.employeeToken.trim());
+    localStorage.setItem(
+      EMPLOYEE_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        employeeToken: session.employeeToken.trim(),
+        nama: session.nama,
+        idPegawai: session.idPegawai || "",
+        outlet: session.outlet || "",
+        posisi: session.posisi || "",
+        expiresAt: session.expiresAt
+      })
+    );
+  } catch (e) {}
+}
+
+export function getSavedEmployeeSession(): {
+  employeeToken: string;
+  nama: string;
+  idPegawai: string;
+  outlet: string;
+  posisi: string;
+  expiresAt?: number;
+} | null {
+  try {
+    const raw = localStorage.getItem(EMPLOYEE_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.employeeToken) return null;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
 function normalizeApiError(err: any, fallbackMsg: string): Error {
   if (isAbortError(err)) {
     return new Error("Koneksi timeout, sinyal mungkin lemah. Silakan coba lagi.");
@@ -175,47 +258,29 @@ function normalizeApiError(err: any, fallbackMsg: string): Error {
   return err instanceof Error ? err : new Error(err?.message || fallbackMsg);
 }
 
-async function gasGet(action: string, params: Record<string, string | undefined> = {}, timeoutMs = 20000): Promise<any> {
-  const baseUrl = getActiveGasUrl();
-  if (!baseUrl) {
-    throw new Error("URL Google Apps Script belum terkonfigurasi.");
-  }
-  const search = new URLSearchParams({ action });
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== "") {
-      search.set(k, v);
-    }
-  }
-  const url = `${baseUrl}?${search.toString()}`;
-  let lastErr: any;
-  for (let i = 0; i <= 1; i++) {
-    try {
-      const res = await fetchWithTimeout(url, { cache: 'no-store' }, timeoutMs);
-      return await parseApiResponse(res, action);
-    } catch (err) {
-      lastErr = err;
-      if (i < 1) {
-        await new Promise((r) => setTimeout(r, 900));
-      }
-    }
-  }
-  throw normalizeApiError(lastErr, `Gagal memuat ${action}`);
-}
-
 async function gasPost(
   action: string,
   data: any = {},
   includeOwnerToken = true,
   timeoutMs = 20000,
-  tokenOverride?: string
+  tokenOverride?: string,
+  includeEmployeeToken = false
 ): Promise<any> {
   const baseUrl = getActiveGasUrl();
   if (!baseUrl) {
     throw new Error("URL Google Apps Script belum terkonfigurasi.");
   }
-  const payload: any = { action, data };
+  const payload: any = {
+    action,
+    data,
+    deviceId: getDeviceId(),
+    userAgent: getUserAgentHint()
+  };
   if (includeOwnerToken) {
     payload.ownerToken = tokenOverride !== undefined ? tokenOverride : getOwnerToken();
+  }
+  if (includeEmployeeToken) {
+    payload.employeeToken = getEmployeeToken();
   }
   try {
     const res = await fetchWithTimeout(
@@ -232,8 +297,84 @@ async function gasPost(
   }
 }
 
+// ==================== EMPLOYEE AUTH ENDPOINTS ====================
+
+export async function employeeLoginApi(identifier: string, pin: string) {
+  return gasPost(
+    'employeeLogin',
+    {
+      identifier: identifier.trim(),
+      nama: identifier.trim(),
+      pin: pin.trim(),
+      deviceId: getDeviceId(),
+      userAgent: getUserAgentHint()
+    },
+    false,
+    20000
+  );
+}
+
+export async function employeeVerifyApi(token?: string) {
+  const tok = token || getEmployeeToken();
+  if (!tok) return { status: 'error', valid: false, authRequired: true, message: 'Token pegawai tidak tersedia' };
+  const baseUrl = getActiveGasUrl();
+  if (!baseUrl) return { status: 'error', valid: false, message: 'URL Google Apps Script belum terkonfigurasi.' };
+  try {
+    const res = await fetchWithTimeout(
+      baseUrl,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'employeeVerify',
+          employeeToken: tok,
+          deviceId: getDeviceId(),
+          userAgent: getUserAgentHint()
+        })
+      },
+      15000
+    );
+    return await parseApiResponse(res, 'employeeVerify');
+  } catch (err) {
+    throw normalizeApiError(err, 'Gagal memverifikasi sesi pegawai');
+  }
+}
+
+export async function employeeLogoutApi(token?: string) {
+  const tok = token || getEmployeeToken();
+  const baseUrl = getActiveGasUrl();
+  if (!baseUrl || !tok) return { status: 'success' };
+  try {
+    const res = await fetchWithTimeout(
+      baseUrl,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'employeeLogout',
+          employeeToken: tok,
+          deviceId: getDeviceId(),
+          userAgent: getUserAgentHint()
+        })
+      },
+      15000
+    );
+    return await parseApiResponse(res, 'employeeLogout');
+  } catch (err) {
+    throw normalizeApiError(err, 'Gagal logout pegawai');
+  }
+}
+
+export async function submitAttendanceFormApi(data: any) {
+  return gasPost('processForm', data, false, 35000, undefined, true);
+}
+
+export async function fetchRiwayatBulanApi(nama: string, bulan: string, asOwner = false) {
+  return gasPost('getRiwayatBulan', { nama, bulan }, asOwner, 20000, undefined, !asOwner);
+}
+
+// ==================== OWNER AUTH & SECURITY MANAGEMENT ENDPOINTS ====================
+
 export async function ownerLoginApi(password: string) {
-  return gasPost('ownerLogin', { password }, false, 20000);
+  return gasPost('ownerLogin', { password, deviceId: getDeviceId(), userAgent: getUserAgentHint() }, false, 20000);
 }
 
 export async function ownerLogoutApi(token?: string) {
@@ -246,6 +387,28 @@ export async function verifyOwnerSessionApi(token?: string) {
   if (!tok) return { status: 'error', valid: false, authRequired: true, message: 'Token tidak tersedia' };
   return gasPost('verifyOwnerSession', {}, true, 15000, tok);
 }
+
+export async function changeOwnerPasswordApi(currentPassword: string, newPassword: string) {
+  return gasPost('changeOwnerPassword', { currentPassword, newPassword }, true, 20000);
+}
+
+export async function fetchOwnerSessionsApi() {
+  return gasPost('getOwnerSessions', {}, true, 20000);
+}
+
+export async function revokeOwnerSessionApi(params: { sessionId?: string; tokenToRevoke?: string; revokeAllOthers?: boolean }) {
+  return gasPost('revokeOwnerSession', params, true, 20000);
+}
+
+export async function fetchAuditLogsApi(filters: { action?: string; actor?: string; dateFrom?: string; dateTo?: string; limit?: number } = {}) {
+  return gasPost('getAuditLogs', filters, true, 25000);
+}
+
+export async function setEmployeePinApi(data: { idPegawai?: string; nama: string; pin: string }) {
+  return gasPost('setEmployeePin', data, true, 20000);
+}
+
+// ==================== ATTENDANCE & OWNER RESOURCE ENDPOINTS ====================
 
 export async function fetchDataPenempatanApi() {
   return gasPost('getDataPenempatan', {}, true, 20000);
@@ -305,8 +468,8 @@ export async function closeDailyAttendanceApi(data: { tanggal: string; alasan?: 
   return gasPost('closeDailyAttendance', data, true, 25000);
 }
 
-export async function fetchPegawaiDetailApi(nama: string, idPegawai?: string, tanggal?: string) {
-  return gasGet('getPegawaiDetail', { nama, idPegawai, tanggal }, 15000);
+export async function fetchPegawaiDetailApi(nama: string, idPegawai?: string, tanggal?: string, asOwner = false) {
+  return gasPost('getPegawaiDetail', { nama, idPegawai, tanggal }, asOwner, 15000, undefined, !asOwner);
 }
 
 export async function fetchRingkasanHarianApi(tanggal?: string) {

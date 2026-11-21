@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -208,6 +209,13 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z', opts = {}) {
       createTextOutput: (t) => ({ setMimeType: () => t })
     },
     Utilities: {
+      DigestAlgorithm: {
+        SHA_256: 'SHA_256'
+      },
+      computeDigest: (_algo, input) => {
+        const digest = crypto.createHash('sha256').update(String(input), 'utf8').digest();
+        return Array.from(digest, (b) => (b > 127 ? b - 256 : b));
+      },
       getUuid: () => {
         const tag = (100000 + (++uuidCounter)).toString(36).toUpperCase().padStart(6, '0');
         return `${tag}aa-4000-8000-9000-000000000000`;
@@ -239,6 +247,20 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z', opts = {}) {
     fault,
     setTimeIso: (iso) => { mockNowMs = Date.parse(iso); }
   };
+}
+
+function loginTestEmployee(envObj, ownerTok, nama, idPegawai, pin = '123456', devSuffix = 'dev') {
+  const setRes = envObj.ctx.setEmployeePin({ idPegawai, nama, pin }, ownerTok);
+  assert.equal(setRes.status, 'success', setRes.message);
+  const loginRes = envObj.ctx.employeeLogin({
+    identifier: idPegawai || nama,
+    pin,
+    deviceId: `test-${devSuffix}-${idPegawai || nama}`,
+    userAgent: 'VerifySuite/1.0'
+  });
+  assert.equal(loginRes.status, 'success', loginRes.message);
+  assert.ok(loginRes.employeeToken, 'employeeLogin must return employeeToken');
+  return loginRes.employeeToken;
 }
 
 // ==================== TEST SUITE EXECUTION ====================
@@ -298,10 +320,11 @@ assert.equal(riskaHistory[1].tanggalAkhir, '2026-11-15', 'Old placement closed o
 
 // Test 4: Riska DATANG at 09:30 WIB (within 08:30 + 60m inclusive tolerance = 09:30 -> TEPAT WAKTU!), then 09:31 would be TELAT
 env.setTimeIso('2026-11-16T02:30:00.000Z'); // 09:30 WIB
+const riskaEmpTok1 = loginTestEmployee(env, token, 'Riska', 'EMP001');
 const datangRiska = ctx.processForm({
   nama: 'Riska', posisi: 'Admin', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
   lat: -6.201, lng: 106.45, image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: riskaEmpTok1 });
 assert.equal(datangRiska.status, 'success', datangRiska.message);
 assert.equal(sheets.get('Data_Absensi').rows[1][7], 'TEPAT WAKTU', '09:30 with 08:30+60m tolerance must be TEPAT WAKTU');
 assert.equal(sheets.get('Data_Absensi').rows[1][0], '16/11/2026', 'New DATANG row inserted at Row 2');
@@ -314,18 +337,19 @@ const schedEditBeforePulang = ctx.saveJadwalHarian({
 }, token);
 assert.equal(schedEditBeforePulang.status, 'success', schedEditBeforePulang.message);
 
-env.setTimeIso('2026-11-16T11:55:00.000Z'); // 18:55 WIB (before 19:00)
+env.setTimeIso('2026-11-16T11:55:00.000Z'); // 18:55 WIB (before 19:00; >4h so re-login first)
+const riskaEmpTok2 = ctx.employeeLogin({ identifier: 'EMP001', pin: '123456', deviceId: 'test-dev-EMP001' }).employeeToken;
 const earlyPulang = ctx.processForm({
   nama: 'Riska', posisi: 'Admin', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
   lat: -6.201, lng: 106.45, image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: riskaEmpTok2 });
 assert.equal(earlyPulang.status, 'error', 'PULANG at 18:55 must be rejected against 19:00 snapshot');
 
 env.setTimeIso('2026-11-16T12:00:00.000Z'); // 19:00 WIB
 const okPulang = ctx.processForm({
   nama: 'Riska', posisi: 'Admin', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
   lat: -6.201, lng: 106.45, image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: riskaEmpTok2 });
 assert.equal(okPulang.status, 'success', okPulang.message);
 assert.equal(sheets.get('Data_Absensi').rows.length, 2, 'PULANG updates Row 2 in place without creating a new row');
 
@@ -360,7 +384,7 @@ const budiCollision = ctx.saveJadwalHarian({
 assert.equal(budiCollision.status, 'error', 'Overlapping double assignment must be rejected');
 
 // Verify Budi permanent DataPenempatan is still Pickup!
-const budiDetailSun = ctx.getPegawaiDetail('Budi Kurir', 'EMP002', '2026-11-22');
+const budiDetailSun = ctx.getPegawaiDetail('Budi Kurir', 'EMP002', '2026-11-22', { ownerToken: token });
 assert.equal(budiDetailSun.effectiveAssignment.posisiPermanen, 'Pickup');
 assert.equal(budiDetailSun.effectiveAssignment.posisiPenugasan, 'Admin');
 assert.equal(budiDetailSun.effectiveAssignment.jenisPenugasan, 'BACKUP');
@@ -379,13 +403,14 @@ assert.ok(sunScheduleView.alerts.some((a) => a.type === 'NO_ADMIN' || a.type ===
 // Test 8: Employee form IZIN/SAKIT syncs DataKetidakhadiran + AbsenIzin + Data_Absensi without duplicate
 env.setTimeIso('2026-11-17T01:00:00.000Z'); // 08:00 WIB Selasa 17 Nov
 token = ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+const sitiEmpTok1 = loginTestEmployee(env, token, 'Siti Magang', 'EMP003');
 const empIzin1 = ctx.processForm({
   nama: 'Siti Magang', posisi: 'Magang', status: 'IZIN', jenisIzin: 'Sakit', alasan: 'Flu berat', image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: sitiEmpTok1 });
 assert.equal(empIzin1.status, 'success', empIzin1.message);
 const empIzin2 = ctx.processForm({
   nama: 'Siti Magang', posisi: 'Magang', status: 'IZIN', jenisIzin: 'Sakit', alasan: 'Flu berat update', image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: sitiEmpTok1 });
 assert.equal(empIzin2.status, 'success', empIzin2.message);
 
 const ketRowsNov17 = ctx.getKetidakhadiran('2026-11-17', '', '', '', token).data;
@@ -416,10 +441,11 @@ token = ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
 // Budi Pickup (jadwal 14:00-22:00) atau Riska (jadwal 08:30-19:00):
 // Budi absen DATANG di 15:10 (TELAT karena > 14:00 + 60m = 15:00) dan lupa absen pulang
 env.setTimeIso('2026-11-18T08:10:00.000Z'); // 15:10 WIB
+const budiEmpTok1 = loginTestEmployee(env, token, 'Budi Kurir', 'EMP002');
 const budiDatang = ctx.processForm({
   nama: 'Budi Kurir', posisi: 'Pickup', status: 'DATANG', outlet: 'YZ_ MDP JAYANTI CIKANDE',
   lat: -6.21, lng: 106.42, image: 'data:image/jpeg;base64,/9j/4AAQ'
-});
+}, { employeeToken: budiEmpTok1 });
 assert.equal(budiDatang.status, 'success', budiDatang.message);
 
 // Test 11 (Auth & getAbsensiByDate): Reject missing ownerToken, succeed with valid token
@@ -527,9 +553,11 @@ const paEnv = createGasEnv('2026-11-21T02:00:00.000Z', {
 const activeNames = Array.from(paEnv.ctx.getActiveEmployeesSafe()).map((e) => e.nama);
 assert.deepEqual(activeNames, ['Riska', 'Budi Kurir', 'Siti Magang', 'Trim Aktif'], 'Only explicit AKTIF employees allowed');
 
-// PA-2: DataPegawai original values untouched & getPegawai returns only active names
+// PA-2: DataPegawai original values untouched & getPegawai requires ownerToken
 assert.equal(paEnv.sheets.get('DataPegawai').rows[5][7], '', 'Original blank status in DataPegawai preserved');
-assert.deepEqual(Array.from(paEnv.ctx.getPegawai().data), ['Riska', 'Budi Kurir', 'Siti Magang', 'Trim Aktif']);
+const paTok = paEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+assert.equal(paEnv.ctx.getPegawai('').authRequired, true, 'Unauthenticated getPegawai must be rejected');
+assert.deepEqual(Array.from(paEnv.ctx.getPegawai(paTok).data), ['Riska', 'Budi Kurir', 'Siti Magang', 'Trim Aktif']);
 
 // PA-3: serializeEmployeePublic strips PII & secrets
 const sampleRawEmp = paEnv.ctx.getActiveEmployeesSafe()[0];
@@ -550,21 +578,27 @@ assert.equal(ownerSerialized.password, undefined, 'Owner serializer must never e
 assert.equal(ownerSerialized.SidikWajah, undefined, 'Owner serializer must never expose SidikWajah');
 assert.equal(ownerSerialized.FaceDescriptor, undefined, 'Owner serializer must never expose FaceDescriptor');
 
-// PA-5: Public getPegawaiDetail hides email, noTelepon, placementHistory, absenceToday, secrets while keeping effectiveAssignment
-const pubDetail = JSON.parse(paEnv.ctx.doGet({
+// PA-5: Unauthenticated getPegawaiDetail rejected; Authenticated employee self-detail hides PII/history while keeping effectiveAssignment
+const unauthDetailGet = JSON.parse(paEnv.ctx.doGet({
   parameter: { action: 'getPegawaiDetail', nama: 'Riska', tanggal: '2026-11-21' }
 }));
-assert.equal(pubDetail.status, 'success');
-assert.ok(pubDetail.effectiveAssignment, 'Public getPegawaiDetail keeps effectiveAssignment');
-assert.equal(pubDetail.pegawai.email, undefined);
-assert.equal(pubDetail.pegawai.noTelepon, undefined);
-assert.equal(pubDetail.placementHistory, undefined);
-assert.equal(pubDetail.absenceToday, undefined);
-assert.equal(JSON.stringify(pubDetail).includes('riska@jnt.test'), false);
-assert.equal(JSON.stringify(pubDetail).includes('secret123'), false);
+assert.equal(unauthDetailGet.status, 'error');
+assert.equal(unauthDetailGet.authRequired, true, 'Unauthenticated getPegawaiDetail must be rejected');
+
+const paEmpTok = loginTestEmployee(paEnv, paTok, 'Riska', 'EMP001');
+const empDetail = JSON.parse(paEnv.ctx.doPost({
+  postData: { contents: JSON.stringify({ action: 'getPegawaiDetail', employeeToken: paEmpTok, data: { nama: 'Riska', tanggal: '2026-11-21' } }) }
+}));
+assert.equal(empDetail.status, 'success');
+assert.ok(empDetail.effectiveAssignment, 'Authenticated self getPegawaiDetail keeps effectiveAssignment');
+assert.equal(empDetail.pegawai.email, undefined);
+assert.equal(empDetail.pegawai.noTelepon, undefined);
+assert.equal(empDetail.placementHistory, undefined);
+assert.equal(empDetail.absenceToday, undefined);
+assert.equal(JSON.stringify(empDetail).includes('riska@jnt.test'), false);
+assert.equal(JSON.stringify(empDetail).includes('secret123'), false);
 
 // PA-6: Owner getPegawaiDetail via POST with valid token returns owner detail without secrets
-const paTok = paEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
 const ownerDetail = JSON.parse(paEnv.ctx.doPost({
   postData: { contents: JSON.stringify({ action: 'getPegawaiDetail', ownerToken: paTok, data: { nama: 'Riska', tanggal: '2026-11-21' } }) }
 }));
@@ -783,20 +817,23 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   }, pbTok);
   assert.equal(sOverlap.status, 'error', 'Overlapping shift must be rejected');
 
+  const budiTok = loginTestEmployee(pbEnv, pbTok, 'Budi Kurir', 'EMP002');
+
   // Shift 1 DATANG at 08:00 WIB
   const d1 = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: budiTok });
   assert.equal(d1.status, 'success', d1.message);
   assert.equal(d1.assignmentUsed.jamPulangEfektif, '12:00');
 
   // Trying DATANG at Outlet 2 while Shift 1 is still open must fail!
-  pbEnv.setTimeIso('2026-11-21T07:05:00.000Z'); // 14:05 WIB
+  pbEnv.setTimeIso('2026-11-21T07:05:00.000Z'); // 14:05 WIB (>4h -> re-login)
+  const budiTok2 = pbEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '123456', deviceId: 'test-dev-EMP002' }).employeeToken;
   const d2Blocked = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
     outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiTok2 });
   assert.equal(d2Blocked.status, 'error', 'Cannot DATANG on shift 2 while shift 1 is still open');
 
   // Close Shift 1 at 14:10 WIB
@@ -804,7 +841,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const p1 = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: budiTok2 });
   assert.equal(p1.status, 'success', p1.message);
 
   // Now Shift 2 DATANG at 14:15 WIB & PULANG at 18:15 WIB
@@ -812,15 +849,16 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const d2 = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
     outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiTok2 });
   assert.equal(d2.status, 'success', d2.message);
   assert.equal(d2.assignmentUsed.posisiPenugasan, 'Pickup');
 
-  pbEnv.setTimeIso('2026-11-21T11:15:00.000Z'); // 18:15 WIB
+  pbEnv.setTimeIso('2026-11-21T11:15:00.000Z'); // 18:15 WIB (>4h from budiTok2 -> re-login)
+  const budiTok3 = pbEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '123456', deviceId: 'test-dev-EMP002' }).employeeToken;
   const p2 = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
     outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiTok3 });
   assert.equal(p2.status, 'success', p2.message);
 
   const pbTokRefresh = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
@@ -836,6 +874,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
 {
   const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
   const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const riskaTok = loginTestEmployee(pbEnv, pbTok, 'Riska', 'EMP001');
   // Insert two same-outlet schedules on same date directly into JadwalHarian (within wide window)
   pbEnv.ctx.saveJadwalHarian({
     idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
@@ -854,7 +893,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const ambigRes = pbEnv.ctx.processForm({
     nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: riskaTok });
   assert.equal(ambigRes.status, 'error', 'Ambiguous active schedules must be rejected, not silently pick first');
 
   // Outlet mismatch vs single JadwalHarian
@@ -862,7 +901,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const mismatchRes = pbEnv.ctx.processForm({
     nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
     outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Admin'
-  });
+  }, { employeeToken: riskaTok });
   assert.equal(mismatchRes.status, 'error', 'DATANG at wrong outlet vs JadwalHarian must be rejected');
 }
 
@@ -870,6 +909,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
 {
   const pbEnv = createGasEnv('2026-11-21T07:05:00.000Z'); // 14:05 WIB
   const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const riskaTok = loginTestEmployee(pbEnv, pbTok, 'Riska', 'EMP001');
   assert.equal(pbEnv.ctx.savePenempatan({
     idPegawai: 'EMP001', nama: 'Riska', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
     posisi: 'Admin', jamMasuk: '07:00', jamPulang: '19:00', hariKerja: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
@@ -878,7 +918,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const dOverride = pbEnv.ctx.processForm({
     nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG',
     outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup'
-  });
+  }, { employeeToken: riskaTok });
   assert.equal(dOverride.status, 'success', dOverride.message);
   assert.equal(dOverride.assignmentUsed.sumberJadwal, 'MANUAL_OUTLET_OVERRIDE');
   assert.equal(dOverride.assignmentUsed.jamMasukEfektif, '14:00');
@@ -889,6 +929,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
 {
   const pbEnv = createGasEnv('2026-11-21T15:00:00.000Z'); // 21 Nov 22:00 WIB
   const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const budiTok = loginTestEmployee(pbEnv, pbTok, 'Budi Kurir', 'EMP002');
   const sch = pbEnv.ctx.saveJadwalHarian({
     idPegawai: 'EMP002', nama: 'Budi Kurir', outlet: 'YZ_ MDP PASIR JAHA BALARAJA',
     posisiPenugasan: 'Pickup', jamMasuk: '22:00', jamPulang: '06:00',
@@ -899,7 +940,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const dNight = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'DATANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiTok });
   assert.equal(dNight.status, 'success', dNight.message);
 
   // Edit JadwalHarian after DATANG to verify snapshot isolation
@@ -914,15 +955,16 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   const earlyNightPulang = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiTok });
   assert.equal(earlyNightPulang.status, 'error', 'Overnight shift PULANG before 06:00 next day must fail');
 
   // At 06:15 WIB on 22 Nov -> PULANG succeeds and closes yesterday's shift with 8j 15m
-  pbEnv.setTimeIso('2026-11-21T23:15:00.000Z'); // 22 Nov 06:15 WIB
+  pbEnv.setTimeIso('2026-11-21T23:15:00.000Z'); // 22 Nov 06:15 WIB (>4h -> re-login)
+  const budiNightTok2 = pbEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '123456', deviceId: 'test-dev-EMP002' }).employeeToken;
   const okNightPulang = pbEnv.ctx.processForm({
     nama: 'Budi Kurir', idPegawai: 'EMP002', status: 'PULANG',
     outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup'
-  });
+  }, { employeeToken: budiNightTok2 });
   assert.equal(okNightPulang.status, 'success', okNightPulang.message);
   const absRow = pbEnv.sheets.get('Data_Absensi').rows[1];
   assert.equal(absRow[0], '21/11/2026');
@@ -930,7 +972,7 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   assert.equal(absRow[6], '8j 15m');
 }
 
-// PB-7: processForm rejects NONAKTIF employee and ambiguous duplicateName without idPegawai
+// PB-7: Auth & active filter rejects NONAKTIF employee and ambiguous duplicateName without idPegawai
 {
   const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z', {
     extraEmployees: [
@@ -938,42 +980,46 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
       ['Andi', '', 'a2@jnt.test', 'p', '082', '01/01/2026', '', 'AKTIF', '', '']
     ]
   });
+  const nonAktifLogin = pbEnv.ctx.employeeLogin({ identifier: 'Dedi Nonaktif', pin: '123456', deviceId: 'pb7-dev' });
+  assert.equal(nonAktifLogin.status, 'error', 'NONAKTIF employee cannot log in');
   const nonAktifSubmit = pbEnv.ctx.processForm({
     nama: 'Dedi Nonaktif', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
   });
   assert.equal(nonAktifSubmit.status, 'error');
 
-  const dupSubmit = pbEnv.ctx.processForm({
-    nama: 'Andi', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
-  assert.equal(dupSubmit.status, 'error', 'Duplicate name without idPegawai must be rejected');
+  const dupLogin = pbEnv.ctx.employeeLogin({ identifier: 'Andi', pin: '123456', deviceId: 'pb7-dup' });
+  assert.equal(dupLogin.status, 'error');
+  assert.equal(dupLogin.ambiguousName, true, 'Duplicate name without idPegawai must prompt for ID Pegawai');
 }
 
 // PB-8: Duplicate closed single-shift DATANG rejected, IZIN after DATANG rejected, case/whitespace name canonicalized
 {
   const pbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const riskaTok = loginTestEmployee(pbEnv, pbTok, 'Riska', 'EMP001');
   const d1 = pbEnv.ctx.processForm({
     nama: '  riska ', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: riskaTok });
   assert.equal(d1.status, 'success', d1.message);
   assert.equal(pbEnv.sheets.get('Data_Absensi').rows[1][1], 'Riska', 'Name should be canonicalized to DataPegawai nama');
 
-  pbEnv.setTimeIso('2026-11-21T13:15:00.000Z'); // 20:15 WIB
+  pbEnv.setTimeIso('2026-11-21T13:15:00.000Z'); // 20:15 WIB (>4h -> re-login)
+  const riskaTok2 = pbEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '123456', deviceId: 'test-dev-EMP001' }).employeeToken;
   const p1 = pbEnv.ctx.processForm({
     nama: 'Riska', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: riskaTok2 });
   assert.equal(p1.status, 'success', p1.message);
 
   // Duplicate DATANG after closed single shift -> rejected
   const d2 = pbEnv.ctx.processForm({
     nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin'
-  });
+  }, { employeeToken: riskaTok2 });
   assert.equal(d2.status, 'error');
 
   // IZIN after already DATANG -> rejected
   const izinAfter = pbEnv.ctx.processForm({
     nama: 'Riska', status: 'IZIN', posisi: 'Admin', jenisIzin: 'Izin', alasan: 'Urusan'
-  });
+  }, { employeeToken: riskaTok2 });
   assert.equal(izinAfter.status, 'error');
 }
 
@@ -981,14 +1027,15 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
 {
   const pbEnv = createGasEnv('2026-11-21T02:00:00.000Z');
   const pbTok = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const sitiTok = loginTestEmployee(pbEnv, pbTok, 'Siti Magang', 'EMP003');
 
   const izin1 = pbEnv.ctx.processForm({
     nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Izin', alasan: 'Keperluan keluarga'
-  });
+  }, { employeeToken: sitiTok });
   assert.equal(izin1.status, 'success');
   const izin2 = pbEnv.ctx.processForm({
     nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Sakit', alasan: 'Demam tinggi'
-  });
+  }, { employeeToken: sitiTok });
   assert.equal(izin2.status, 'success');
 
   assert.equal(pbEnv.sheets.get('DataKetidakhadiran').rows.length, 2, 'DataKetidakhadiran must not duplicate on re-submit');
@@ -1009,14 +1056,14 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   assert.equal(pbEnv.ctx.getKetidakhadiran('2026-11-21', '', 'Siti Magang', '', pbTok).data.length, 0);
   assert.equal(pbEnv.ctx.getKehadiranHarian('2026-11-21', pbTok).data.find((r) => r.nama === 'Siti Magang').statusKehadiran, 'BELUM DIJADWALKAN');
   assert.equal(pbEnv.ctx.getRingkasanHarian('2026-11-21', pbTok).data.length, 0);
-  assert.equal(pbEnv.ctx.getRiwayat('Siti Magang').data.length, 0);
+  assert.equal(pbEnv.ctx.getRiwayat('Siti Magang', { employeeToken: sitiTok }).data.length, 0);
   const lapCancel = pbEnv.ctx.getLaporanBulanan('2026-11', pbTok);
   assert.equal(lapCancel.data.length, 0, 'Cancelled absence must not appear in Laporan Bulanan');
 
   // Clean re-submission after cancellation creates new active record
   const izinAfterCancel = pbEnv.ctx.processForm({
     nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Izin', alasan: 'Izin baru sah'
-  });
+  }, { employeeToken: sitiTok });
   assert.equal(izinAfterCancel.status, 'success');
   assert.equal(pbEnv.ctx.getKetidakhadiran('2026-11-21', '', 'Siti Magang', '', pbTok).data.length, 1);
 }
@@ -1089,10 +1136,13 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   }, pbTok).status, 'success');
 
   // Day 18: Riska HADIR (08:00 -> 20:00), Siti SAKIT via processForm (syncs DataKetidakhadiran + Data_Absensi)
-  pbEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' });
-  pbEnv.ctx.processForm({ nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Sakit', alasan: 'Flu berat' });
-  pbEnv.setTimeIso('2026-11-18T13:00:00.000Z'); // 20:00 WIB
-  pbEnv.ctx.processForm({ nama: 'Riska', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' });
+  const riskaTok = loginTestEmployee(pbEnv, pbTok, 'Riska', 'EMP001');
+  const sitiTok = loginTestEmployee(pbEnv, pbTok, 'Siti Magang', 'EMP003');
+  pbEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: riskaTok });
+  pbEnv.ctx.processForm({ nama: 'Siti Magang', status: 'IZIN', posisi: 'Magang', jenisIzin: 'Sakit', alasan: 'Flu berat' }, { employeeToken: sitiTok });
+  pbEnv.setTimeIso('2026-11-18T13:00:00.000Z'); // 20:00 WIB (>4h -> re-login)
+  const riskaTok2 = pbEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '123456', deviceId: 'test-dev-EMP001' }).employeeToken;
+  pbEnv.ctx.processForm({ nama: 'Riska', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: riskaTok2 });
 
   // Owner marks Budi ALPA on 18 Nov, AND manually records SAKIT for Riska on 18 Nov to test no double-count when HADIR exists
   const pbTok2 = pbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
@@ -1136,4 +1186,272 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   assert.equal(pbEnv.ctx.getJakartaDateStr(), '22/11/2026');
 }
 
-console.log('ALL 16 EXISTING + 18 PHASE A + 14 PHASE B TESTS (48 TOTAL) PASSED SUCCESSFULLY');
+// ==================== v2.10.0 LAYERED SECURITY & AUTHENTICATION (15 SCENARIOS) ====================
+
+// LS-1: Valid employee login by Nama or ID Pegawai updates PinLastUsed & upgrades plaintext PIN
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  assert.equal(lsEnv.ctx.setEmployeePin({ idPegawai: 'EMP001', nama: 'Riska', pin: '246810' }, ownTok).status, 'success');
+
+  const storedHash = lsEnv.sheets.get('DataPegawai').rows[1][10];
+  assert.ok(String(storedHash).startsWith('sha256$'), 'PIN must be stored as salted SHA-256 hash');
+  assert.equal(String(storedHash).includes('246810'), false, 'Raw PIN must never be stored in DataPegawai col K');
+
+  const loginByName = lsEnv.ctx.employeeLogin({ identifier: 'riska', pin: '246810', deviceId: 'dev-ls1-a' });
+  assert.equal(loginByName.status, 'success', loginByName.message);
+  assert.ok(loginByName.employeeToken.startsWith('EMP-'));
+  assert.ok(lsEnv.sheets.get('DataPegawai').rows[1][12], 'PinLastUsed (col M) must be updated on login');
+
+  // Legacy plaintext PIN manually entered in Sheet col K should upgrade transparently on valid login
+  lsEnv.sheets.get('DataPegawai').rows[2][10] = '654321';
+  const loginLegacy = lsEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '654321', deviceId: 'dev-ls1-b' });
+  assert.equal(loginLegacy.status, 'success', loginLegacy.message);
+  assert.ok(String(lsEnv.sheets.get('DataPegawai').rows[2][10]).startsWith('sha256$'), 'Plaintext sheet PIN upgraded to hash');
+}
+
+// LS-2 & LS-3: 3 wrong PINs lock account for 15 minutes, reject while locked, and unlock after +15 minutes
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  lsEnv.ctx.setEmployeePin({ idPegawai: 'EMP001', nama: 'Riska', pin: '112233' }, ownTok);
+
+  const w1 = lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '000001', deviceId: 'dev-lock' });
+  assert.equal(w1.status, 'error');
+  assert.equal(w1.remainingAttempts, 2);
+
+  const w2 = lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '000002', deviceId: 'dev-lock' });
+  assert.equal(w2.status, 'error');
+  assert.equal(w2.remainingAttempts, 1);
+
+  const w3 = lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '000003', deviceId: 'dev-lock' });
+  assert.equal(w3.status, 'error');
+  assert.equal(w3.locked, true, '3 wrong PINs must lock account for 15 minutes');
+
+  // Even correct PIN from another device must fail while locked
+  const duringLock = lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '112233', deviceId: 'dev-other' });
+  assert.equal(duringLock.status, 'error');
+  assert.equal(duringLock.locked, true);
+
+  // Advance +16 minutes -> unlocks automatically
+  lsEnv.setTimeIso('2026-11-21T02:16:00.000Z');
+  const afterLock = lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '112233', deviceId: 'dev-other' });
+  assert.equal(afterLock.status, 'success', afterLock.message);
+}
+
+// LS-4 & LS-5: processForm rejects missing/invalid/expired employeeToken and spoofing nama/idPegawai
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const riskaTok = loginTestEmployee(lsEnv, ownTok, 'Riska', 'EMP001', '123456', 'ls4');
+
+  const noTok = lsEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' });
+  assert.equal(noTok.status, 'error');
+  assert.equal(noTok.authRequired, true);
+
+  const badTok = lsEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: 'EMP-fake' });
+  assert.equal(badTok.status, 'error');
+  assert.equal(badTok.authRequired, true);
+
+  // Spoof another employee's name or ID using Riska's token
+  const spoofNama = lsEnv.ctx.processForm({ nama: 'Budi Kurir', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Pickup' }, { employeeToken: riskaTok });
+  assert.equal(spoofNama.status, 'error');
+  assert.equal(spoofNama.authRequired, true, 'Must reject nama mismatch spoofing');
+
+  const spoofId = lsEnv.ctx.processForm({ nama: 'Riska', idPegawai: 'EMP002', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: riskaTok });
+  assert.equal(spoofId.status, 'error');
+  assert.equal(spoofId.authRequired, true, 'Must reject idPegawai mismatch spoofing');
+
+  // Expiry after > 4 hours
+  lsEnv.setTimeIso('2026-11-21T06:30:00.000Z');
+  const expiredEmp = lsEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: riskaTok });
+  assert.equal(expiredEmp.status, 'error');
+  assert.equal(expiredEmp.authRequired, true, 'Expired employeeToken (>4h) must be rejected');
+}
+
+// LS-6, LS-7, LS-8: Endpoint authorization boundaries & cross-employee data isolation
+{
+  const lsEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  const riskaTok = loginTestEmployee(lsEnv, ownTok, 'Riska', 'EMP001');
+  const budiTok = loginTestEmployee(lsEnv, ownTok, 'Budi Kurir', 'EMP002');
+
+  assert.equal(lsEnv.ctx.processForm({ nama: 'Riska', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' }, { employeeToken: riskaTok }).status, 'success');
+  assert.equal(lsEnv.ctx.processForm({ nama: 'Budi Kurir', status: 'DATANG', outlet: 'YZ_ MDP JAYANTI CIKANDE', posisi: 'Pickup' }, { employeeToken: budiTok }).status, 'success');
+
+  // getPegawai requires ownerToken (must reject anonymous AND employeeToken)
+  assert.equal(lsEnv.ctx.getPegawai('').authRequired, true);
+  assert.equal(lsEnv.ctx.getPegawai(riskaTok).authRequired, true, 'employeeToken cannot list all employees via getPegawai');
+
+  // Cross-employee getRiwayat / getRiwayatBulan / getPegawaiDetail denied
+  assert.equal(lsEnv.ctx.getRiwayat('Budi Kurir', '').authRequired, true);
+  assert.equal(lsEnv.ctx.getRiwayat('Budi Kurir', { employeeToken: riskaTok }).authRequired, true, 'Cannot read another employee riwayat');
+  assert.equal(lsEnv.ctx.getRiwayatBulan('Budi Kurir', '2026-11', { employeeToken: riskaTok }).authRequired, true, 'Cannot read another employee monthly riwayat');
+  assert.equal(lsEnv.ctx.getPegawaiDetail('Budi Kurir', 'EMP002', '2026-11-21', { employeeToken: riskaTok }).authRequired, true, 'Cannot read another employee detail');
+
+  // getRingkasanHarian rejects unauth; returns self-only for employeeToken; returns all for ownerToken
+  assert.equal(lsEnv.ctx.getRingkasanHarian('2026-11-21', '', '').authRequired, true);
+  const empRingkasan = lsEnv.ctx.getRingkasanHarian('2026-11-21', '', riskaTok);
+  assert.equal(empRingkasan.status, 'success');
+  assert.equal(empRingkasan.data.length, 1);
+  assert.equal(empRingkasan.data[0].nama, 'Riska', 'employeeToken only sees own ringkasan row');
+
+  const ownerRingkasan = lsEnv.ctx.getRingkasanHarian('2026-11-21', ownTok, '');
+  assert.equal(ownerRingkasan.status, 'success');
+  assert.equal(ownerRingkasan.data.length, 2);
+}
+
+// LS-9 & LS-10: changeOwnerPassword complexity, password history, hashed storage, and global session invalidation
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const tokA = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'dev-a' }).token;
+  const tokB = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'dev-b' }).token;
+
+  assert.equal(lsEnv.ctx.changeOwnerPassword({ currentPassword: 'SecretOwner#2026', newPassword: 'short1' }, tokA).status, 'error', 'Password <8 chars rejected');
+  assert.equal(lsEnv.ctx.changeOwnerPassword({ currentPassword: 'SecretOwner#2026', newPassword: '12345678' }, tokA).status, 'error', 'Digits-only password rejected');
+  assert.equal(lsEnv.ctx.changeOwnerPassword({ currentPassword: 'SecretOwner#2026', newPassword: 'onlyletters' }, tokA).status, 'error', 'Letters-only password rejected');
+  assert.equal(lsEnv.ctx.changeOwnerPassword({ currentPassword: 'WrongCurrent1', newPassword: 'ValidPass123' }, tokA).status, 'error', 'Wrong current password rejected');
+
+  const ch1 = lsEnv.ctx.changeOwnerPassword({ currentPassword: 'SecretOwner#2026', newPassword: 'NewOwnerPass1' }, tokA);
+  assert.equal(ch1.status, 'success', ch1.message);
+  assert.ok(String(lsEnv.sheets.get('Settings').getRange('B10').getValue()).startsWith('sha256$'), 'Settings!B10 updated to salted SHA-256 hash');
+
+  // All previous tokens (both tokA & tokB) must now be invalid in Cache + Properties
+  assert.equal(lsEnv.ctx.checkOwnerToken(tokA).ok, false, 'Issuer session invalidated on password change');
+  assert.equal(lsEnv.ctx.checkOwnerToken(tokB).ok, false, 'All other Owner sessions invalidated on password change');
+
+  // Old password login must fail; new password succeeds
+  assert.equal(lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'dev-c' }).status, 'error');
+  const tokNew = lsEnv.ctx.ownerLogin({ password: 'NewOwnerPass1', deviceId: 'dev-c' }).token;
+  assert.ok(tokNew, 'Login with new hashed password succeeds');
+
+  // Reusing a recent password (from last 5) must fail
+  const reuseTry = lsEnv.ctx.changeOwnerPassword({ currentPassword: 'NewOwnerPass1', newPassword: 'SecretOwner#2026' }, tokNew);
+  assert.equal(reuseTry.status, 'error', 'Password reuse from history must be rejected');
+}
+
+// LS-11 & LS-12: getOwnerSessions masks tokens + revokeOwnerSession (single & revokeAllOthers)
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const tok1 = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'phone-1', userAgent: 'Safari' }).token;
+  const tok2 = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'laptop-2', userAgent: 'Chrome' }).token;
+  const tok3 = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'tablet-3', userAgent: 'Firefox' }).token;
+
+  const sessList = lsEnv.ctx.getOwnerSessions(tok1);
+  assert.equal(sessList.status, 'success');
+  assert.equal(sessList.data.length, 3);
+  const serializedSess = JSON.stringify(sessList);
+  assert.equal(serializedSess.includes(tok1), false, 'getOwnerSessions must never expose raw ownerToken');
+  assert.equal(serializedSess.includes(tok2), false, 'getOwnerSessions must never expose raw other ownerToken');
+  assert.equal(sessList.data.filter((s) => s.isCurrent).length, 1);
+
+  const otherSess = sessList.data.find((s) => !s.isCurrent);
+  assert.equal(lsEnv.ctx.revokeOwnerSession({ sessionId: otherSess.sessionId }, tok1).status, 'success');
+  assert.equal(lsEnv.ctx.getOwnerSessions(tok1).data.length, 2);
+
+  // revokeAllOthers keeps tok1 active and removes remaining other session
+  assert.equal(lsEnv.ctx.revokeOwnerSession({ revokeAllOthers: true }, tok1).status, 'success');
+  assert.equal(lsEnv.ctx.checkOwnerToken(tok1).ok, true, 'Current session remains active after revokeAllOthers');
+  assert.equal(lsEnv.ctx.checkOwnerToken(tok2).ok && lsEnv.ctx.checkOwnerToken(tok3).ok, false, 'Other sessions revoked');
+}
+
+// LS-13: AuditLog records actions & redacts sensitive credentials (PIN/password/tokens/images)
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'audit-dev' }).token;
+  lsEnv.ctx.setEmployeePin({ idPegawai: 'EMP001', nama: 'Riska', pin: '789012' }, ownTok);
+  lsEnv.ctx.employeeLogin({ identifier: 'EMP001', pin: '999999', deviceId: 'audit-dev' }); // failed attempt
+
+  const auditRes = lsEnv.ctx.getAuditLogs({ limit: 50 }, ownTok);
+  assert.equal(auditRes.status, 'success');
+  assert.ok(auditRes.data.length >= 3);
+  assert.ok(auditRes.data.some((l) => l.action === 'setEmployeePin' && l.status === 'SUCCESS'));
+  assert.ok(auditRes.data.some((l) => l.action === 'employeeLogin' && l.status === 'FAILED'));
+
+  const auditJson = JSON.stringify(auditRes.data);
+  assert.equal(auditJson.includes('SecretOwner#2026'), false, 'AuditLog must never contain owner password');
+  assert.equal(auditJson.includes('789012'), false, 'AuditLog must never contain raw employee PIN');
+  assert.equal(auditJson.includes(ownTok), false, 'AuditLog must never contain raw ownerToken');
+}
+
+// LS-14: Rate limiting enforces limits per window and resets after window expiry
+{
+  const lsEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  // ownerLogin: max 3 / 15m per deviceId
+  for (let i = 0; i < 3; i++) {
+    assert.equal(lsEnv.ctx.ownerLogin({ password: 'WrongPassword1', deviceId: 'rl-owner-dev' }).rateLimited, undefined);
+  }
+  const ownerRlBlocked = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'rl-owner-dev' });
+  assert.equal(ownerRlBlocked.status, 'error');
+  assert.equal(ownerRlBlocked.rateLimited, true, '4th ownerLogin within 15m on same deviceId must be rate-limited');
+
+  // employeeLogin: max 5 / 15m per account+deviceId
+  const adminTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'admin-setup' }).token;
+  lsEnv.ctx.setEmployeePin({ idPegawai: 'EMP001', nama: 'Riska', pin: '123456' }, adminTok);
+  for (let i = 0; i < 5; i++) {
+    lsEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '111111', deviceId: 'rl-emp-dev' });
+  }
+  const empRlBlocked = lsEnv.ctx.employeeLogin({ identifier: 'EMP002', pin: '111111', deviceId: 'rl-emp-dev' });
+  assert.equal(empRlBlocked.status, 'error');
+  assert.equal(empRlBlocked.rateLimited, true, '6th employeeLogin within 15m must be rate-limited');
+
+  // After +16m window expires -> rate limit resets cleanly
+  lsEnv.setTimeIso('2026-11-21T02:16:00.000Z');
+  const ownerRlAfter = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'rl-owner-dev' });
+  assert.equal(ownerRlAfter.status, 'success', 'Rate limit must reset after window expires');
+}
+
+// LS-15: End-to-end employee flow: setEmployeePin -> employeeLogin -> employeeVerify -> DATANG -> PULANG -> getRiwayatBulan -> employeeLogout
+{
+  const lsEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const ownTok = lsEnv.ctx.ownerLogin({ password: 'SecretOwner#2026' }).token;
+  assert.equal(lsEnv.ctx.setEmployeePin({ idPegawai: 'EMP001', nama: 'Riska', pin: '445566' }, ownTok).status, 'success');
+
+  const empLogin = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'employeeLogin', data: { identifier: 'EMP001', pin: '445566', deviceId: 'e2e-phone' } }) }
+  }));
+  assert.equal(empLogin.status, 'success');
+  const empTok = empLogin.employeeToken;
+
+  const verifyOk = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'employeeVerify', employeeToken: empTok }) }
+  }));
+  assert.equal(verifyOk.valid, true);
+  assert.equal(verifyOk.nama, 'Riska');
+
+  const dRes = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'processForm', employeeToken: empTok, data: { nama: 'Riska', idPegawai: 'EMP001', status: 'DATANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' } }) }
+  }));
+  assert.equal(dRes.status, 'success', dRes.message);
+
+  lsEnv.setTimeIso('2026-11-21T13:15:00.000Z'); // 20:15 WIB (with +2h CacheService still valid? Wait: +12h would expire, 08:00->20:15 is 12h15m >4h Properties TTL! Use +2h5m for Magang or re-login; let's check!)
+  // Wait: Riska Admin 08:00-20:00 is >4h so after 12h session naturally expired — simulate re-login before PULANG!
+  const empLogin2 = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'employeeLogin', data: { identifier: 'EMP001', pin: '445566', deviceId: 'e2e-phone' } }) }
+  }));
+  const empTok2 = empLogin2.employeeToken;
+
+  const pRes = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'processForm', employeeToken: empTok2, data: { nama: 'Riska', idPegawai: 'EMP001', status: 'PULANG', outlet: 'YZ_ MDP PASIR JAHA BALARAJA', posisi: 'Admin' } }) }
+  }));
+  assert.equal(pRes.status, 'success', pRes.message);
+
+  const histRes = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'getRiwayatBulan', employeeToken: empTok2, data: { nama: 'Riska', bulan: '2026-11' } }) }
+  }));
+  assert.equal(histRes.status, 'success');
+  assert.equal(histRes.data.length, 1);
+
+  const outRes = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'employeeLogout', employeeToken: empTok2 }) }
+  }));
+  assert.equal(outRes.status, 'success');
+
+  const verifyAfterLogout = JSON.parse(lsEnv.ctx.doPost({
+    postData: { contents: JSON.stringify({ action: 'employeeVerify', employeeToken: empTok2 }) }
+  }));
+  assert.equal(verifyAfterLogout.valid, false);
+  assert.equal(verifyAfterLogout.authRequired, true);
+}
+
+console.log('ALL 16 EXISTING + 18 PHASE A + 14 PHASE B + 15 LAYERED SECURITY TESTS (63 TOTAL) PASSED SUCCESSFULLY');

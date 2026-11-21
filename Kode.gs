@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-11-21-v2.9.3-phase-b-integrity";
+const BACKEND_VERSION = "2026-11-21-v2.10.0-layered-security";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -8,6 +8,9 @@ const ALLOWED_DAY_CODES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const ALLOWED_ABSENCE_STATUSES = ["LIBUR", "IZIN", "SAKIT", "ALPA"];
 const ALLOWED_ASSIGNMENT_TYPES = ["NORMAL", "BACKUP", "ROTASI", "PENGGANTI"];
 const ALLOWED_SCHEDULE_STATUSES = ["DIJADWALKAN", "LIBUR", "DIBATALKAN"];
+
+// Request metadata context populated per HTTP request for audit & rate-limit tracking
+let _currentRequestMeta = { deviceId: "", userAgent: "" };
 
 // Set to true to allow CORS from all origins (important for requests from Vercel)
 const HEADERS = {
@@ -55,7 +58,12 @@ function getDeploymentInfo() {
       "splitShiftResolution",
       "softCancelKetidakhadiran",
       "unscheduledExclusionFromAlpa",
-      "canonicalMonthlyReport"
+      "canonicalMonthlyReport",
+      "employeePinAuth",
+      "rateLimiting",
+      "auditLog",
+      "ownerPasswordRotation",
+      "ownerSessionManagement"
     ]
   };
 }
@@ -64,35 +72,52 @@ function getDeploymentInfo() {
  * Handle HTTP GET requests (hanya untuk endpoint publik non-sensitif; token tidak pernah diterima via URL query)
  */
 function doGet(e) {
+  const prevMeta = _currentRequestMeta;
   try {
     const params = (e && e.parameter) ? e.parameter : {};
+    _currentRequestMeta = {
+      deviceId: String(params.deviceId || params.clientKey || "get_client").slice(0, 80),
+      userAgent: String(params.userAgent || "GET").slice(0, 160)
+    };
+
     if (params.ownerToken || params.token) {
+      logAudit("doGet:" + (params.action || "-"), "anonymous", _currentRequestMeta.deviceId, _currentRequestMeta.userAgent, "FAILED", { reason: "token_in_url" });
       return ContentService.createTextOutput(JSON.stringify({
         status: 'error',
         authRequired: true,
-        message: 'ownerToken tidak diperbolehkan melalui parameter URL (GET). Gunakan metode POST.',
+        message: 'Token sesi tidak diperbolehkan melalui parameter URL (GET). Gunakan metode POST.',
         backendVersion: BACKEND_VERSION
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    const action = params.action;
+    const action = params.action || "";
+    const rl = checkRateLimit(_currentRequestMeta.deviceId || "get_anonymous", "GET_" + (action || "unknown"), 60, 1);
+    if (!rl.allowed) {
+      logAudit("doGet:" + action, "anonymous", _currentRequestMeta.deviceId, _currentRequestMeta.userAgent, "FAILED", { reason: "rate_limit" });
+      return ContentService.createTextOutput(JSON.stringify({
+        status: 'error',
+        rateLimited: true,
+        retryAfterSeconds: rl.retryAfterSeconds,
+        message: 'Terlalu banyak permintaan. Coba lagi dalam beberapa detik.',
+        backendVersion: BACKEND_VERSION
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     let result = {};
 
     if (action === 'getDeploymentInfo' || action === 'ping') {
       result = getDeploymentInfo();
-    } else if (action === 'getPegawai') {
-      result = getPegawai();
-    } else if (action === 'getPegawaiDetail') {
-      result = getPegawaiDetail(params.nama, params.idPegawai, params.tanggal);
-    } else if (action === 'getRiwayat') {
-      result = getRiwayat(params.nama);
-    } else if (action === 'getRiwayatBulan') {
-      result = getRiwayatBulan(params.nama, params.bulan);
     } else if (action === 'getOutlets') {
       result = { status: 'success', data: getOutlets(), backendVersion: BACKEND_VERSION };
     } else if (action === 'getSettings') {
       result = getSettings();
+    } else if (action === 'employeeVerify') {
+      result = employeeVerify(params.employeeToken || "");
     } else if (
+      action === 'getPegawai' ||
+      action === 'getPegawaiDetail' ||
+      action === 'getRiwayat' ||
+      action === 'getRiwayatBulan' ||
       action === 'saveSettings' ||
       action === 'verifyOwnerSession' ||
       action === 'getDataPenempatan' ||
@@ -103,12 +128,15 @@ function doGet(e) {
       action === 'getKetidakhadiran' ||
       action === 'getAbsensiByDate' ||
       action === 'getRingkasanHarian' ||
-      action === 'getLaporanBulanan'
+      action === 'getLaporanBulanan' ||
+      action === 'getOwnerSessions' ||
+      action === 'getAuditLogs'
     ) {
+      logAudit("doGet:" + action, "anonymous", _currentRequestMeta.deviceId, _currentRequestMeta.userAgent, "FAILED", { reason: "auth_required_post_only" });
       result = {
         status: 'error',
         authRequired: true,
-        message: 'Endpoint Owner wajib menggunakan metode POST dengan ownerToken di body.',
+        message: 'Endpoint terproteksi wajib menggunakan metode POST dengan token sesi di body.',
         backendVersion: BACKEND_VERSION
       };
     } else {
@@ -120,6 +148,8 @@ function doGet(e) {
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'Terjadi kesalahan pada server.', backendVersion: BACKEND_VERSION }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    _currentRequestMeta = prevMeta;
   }
 }
 
@@ -127,22 +157,51 @@ function doGet(e) {
  * Handle HTTP POST requests
  */
 function doPost(e) {
+  const prevMeta = _currentRequestMeta;
   try {
     const rawBody = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
     const payload = JSON.parse(rawBody);
     const data = (payload && payload.data && typeof payload.data === 'object') ? payload.data : {};
     const action = payload.action;
     const ownerToken = payload.ownerToken || payload.token || data.ownerToken || "";
+    const employeeToken = payload.employeeToken || data.employeeToken || "";
+    const deviceId = String(payload.deviceId || data.deviceId || "post_client").slice(0, 80);
+    const userAgent = String(payload.userAgent || data.userAgent || "POST").slice(0, 160);
+    _currentRequestMeta = { deviceId: deviceId, userAgent: userAgent };
+
+    const authTokens = { ownerToken: ownerToken, employeeToken: employeeToken, deviceId: deviceId, userAgent: userAgent };
     let result = {};
 
     if (action === 'ownerLogin') {
-      result = ownerLogin(payload.data || payload);
+      result = ownerLogin(Object.assign({}, (payload.data || payload), { deviceId: deviceId, userAgent: userAgent }));
     } else if (action === 'ownerLogout') {
       result = ownerLogout(ownerToken);
     } else if (action === 'verifyOwnerSession') {
       result = verifyOwnerSession(ownerToken);
+    } else if (action === 'changeOwnerPassword') {
+      result = changeOwnerPassword(data, ownerToken);
+    } else if (action === 'getOwnerSessions') {
+      result = getOwnerSessions(ownerToken);
+    } else if (action === 'revokeOwnerSession') {
+      result = revokeOwnerSession(data, ownerToken);
+    } else if (action === 'getAuditLogs') {
+      result = getAuditLogs(data, ownerToken);
+    } else if (action === 'employeeLogin') {
+      result = employeeLogin(Object.assign({}, (payload.data || payload), { deviceId: deviceId, userAgent: userAgent }));
+    } else if (action === 'employeeVerify') {
+      result = employeeVerify(employeeToken);
+    } else if (action === 'employeeLogout') {
+      result = employeeLogout(employeeToken);
+    } else if (action === 'setEmployeePin') {
+      result = setEmployeePin(data, ownerToken);
+    } else if (action === 'getPegawai') {
+      result = getPegawai(ownerToken);
+    } else if (action === 'getRiwayat') {
+      result = getRiwayat(data.nama, authTokens);
+    } else if (action === 'getRiwayatBulan') {
+      result = getRiwayatBulan(data.nama, data.bulan, authTokens);
     } else if (action === 'processForm') {
-      result = processForm(data);
+      result = processForm(data, authTokens);
     } else if (action === 'saveSettings') {
       result = saveSettings(data, ownerToken);
     } else if (action === 'getDataPenempatan') {
@@ -160,11 +219,11 @@ function doPost(e) {
     } else if (action === 'getAbsensiByDate') {
       result = getAbsensiByDate(data.tanggal, data.outlet, data.search, ownerToken);
     } else if (action === 'getRingkasanHarian') {
-      result = getRingkasanHarian(data.tanggal, ownerToken);
+      result = getRingkasanHarian(data.tanggal, ownerToken, employeeToken);
     } else if (action === 'getLaporanBulanan') {
       result = getLaporanBulanan(data.bulan, ownerToken);
     } else if (action === 'getPegawaiDetail') {
-      result = getPegawaiDetail(data.nama, data.idPegawai, data.tanggal, ownerToken);
+      result = getPegawaiDetail(data.nama, data.idPegawai, data.tanggal, authTokens);
     } else if (action === 'savePenempatan') {
       result = savePenempatan(data, ownerToken);
     } else if (action === 'saveJadwalHarian') {
@@ -191,11 +250,27 @@ function doPost(e) {
       result = { status: 'error', message: 'Aksi POST tidak valid', backendVersion: BACKEND_VERSION };
     }
 
+    const selfLoggedActions = [
+      'ownerLogin', 'ownerLogout', 'changeOwnerPassword', 'getOwnerSessions',
+      'revokeOwnerSession', 'setEmployeePin', 'employeeLogin', 'employeeLogout',
+      'getPegawai', 'getRiwayat', 'getRiwayatBulan', 'getRingkasanHarian',
+      'getPegawaiDetail', 'processForm'
+    ];
+    if (selfLoggedActions.indexOf(action) === -1 && action !== 'getAuditLogs') {
+      const actorLabel = ownerToken ? 'Owner' : (employeeToken ? 'Pegawai' : 'anonymous');
+      const statusLabel = (result && result.status === 'success') ? 'SUCCESS' : 'FAILED';
+      logAudit(action || 'unknown', actorLabel, deviceId, userAgent, statusLabel, {
+        message: (result && result.message) ? String(result.message).slice(0, 140) : ''
+      });
+    }
+
     return ContentService.createTextOutput(JSON.stringify(result))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'Terjadi kesalahan pada server.', backendVersion: BACKEND_VERSION }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    _currentRequestMeta = prevMeta;
   }
 }
 
@@ -354,7 +429,134 @@ function intervalsOverlap(startA, endA, startB, endB) {
   return a1 < b2 && b1 < a2;
 }
 
-// ==================== OWNER AUTHENTICATION ====================
+// ==================== CRYPTO, RATE LIMITING & AUDIT LOG ====================
+
+function sha256Hex(input) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(input || ""));
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    hex += ("0" + b.toString(16)).slice(-2);
+  }
+  return hex;
+}
+
+function hashSecret(secret, saltOptional) {
+  const salt = saltOptional || Utilities.getUuid().replace(/-/g, "").slice(0, 16);
+  return "sha256$" + salt + "$" + sha256Hex(salt + ":" + String(secret || ""));
+}
+
+function verifySecret(candidate, stored) {
+  if (!candidate || !stored) return false;
+  const s = String(stored).trim();
+  const c = String(candidate);
+  if (s.indexOf("sha256$") === 0) {
+    const parts = s.split("$");
+    if (parts.length !== 3 || !parts[1] || !parts[2]) return false;
+    return sha256Hex(parts[1] + ":" + c) === parts[2];
+  }
+  return c === s;
+}
+
+function maskTokenPreview(tok) {
+  const clean = String(tok || "").trim();
+  if (!clean) return "-";
+  if (clean.length <= 10) return clean.slice(0, 3) + "****";
+  return clean.slice(0, 6) + "****" + clean.slice(-4);
+}
+
+function sanitizeAuditDetails(details) {
+  if (details === undefined || details === null) return {};
+  if (typeof details !== "object") return { value: String(details).slice(0, 200) };
+  if (Array.isArray(details)) {
+    return details.slice(0, 20).map(sanitizeAuditDetails);
+  }
+  const out = {};
+  const keys = Object.keys(details);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (/password|pin|token|secret|image|base64|foto/i.test(k) && k.indexOf("Prefix") === -1 && k.indexOf("Mask") === -1 && k.indexOf("Count") === -1) {
+      out[k] = "[REDACTED]";
+    } else {
+      const v = details[k];
+      out[k] = (v && typeof v === "object") ? sanitizeAuditDetails(v) : v;
+    }
+  }
+  return out;
+}
+
+function ensureAuditLogSheet(ss) {
+  const targetSs = ss || getSpreadsheet();
+  let sheet = targetSs.getSheetByName("AuditLog");
+  if (!sheet) {
+    sheet = targetSs.insertSheet("AuditLog");
+    sheet.getRange(1, 1, 1, 7).setValues([[
+      "Timestamp", "Action", "Actor", "IP Address", "UserAgent", "Status", "Details"
+    ]]);
+  } else if (String(sheet.getRange(1, 1).getValue() || "").trim() !== "Timestamp") {
+    sheet.getRange(1, 1, 1, 7).setValues([[
+      "Timestamp", "Action", "Actor", "IP Address", "UserAgent", "Status", "Details"
+    ]]);
+  }
+  return sheet;
+}
+
+function logAudit(action, actor, ip, userAgent, status, details) {
+  try {
+    const ss = getSpreadsheet();
+    const sheet = ensureAuditLogSheet(ss);
+    const meta = _currentRequestMeta || { deviceId: "", userAgent: "" };
+    const effectiveIp = String(ip || meta.deviceId || "internal").slice(0, 80);
+    const effectiveUa = String(userAgent || meta.userAgent || "GAS").slice(0, 160);
+    const ts = getJakartaIsoTimestampStr();
+    const statusStr = String(status || "SUCCESS").toUpperCase();
+    const safeJson = JSON.stringify(sanitizeAuditDetails(details || {}));
+    prependDataRow(sheet, [
+      ts,
+      String(action || "-"),
+      String(actor || "anonymous"),
+      effectiveIp,
+      effectiveUa,
+      statusStr,
+      safeJson
+    ]);
+  } catch (e) {}
+}
+
+function checkRateLimit(keyOrIp, action, maxRequests, windowMinutes) {
+  const cleanAction = String(action || "default").trim();
+  const cleanKey = String(keyOrIp || "anonymous").trim();
+  const propKey = "RL_" + sha256Hex(cleanAction + "|" + cleanKey).slice(0, 24);
+  const windowMs = Math.max(1, Number(windowMinutes) || 1) * 60 * 1000;
+  const maxReq = Math.max(1, Number(maxRequests) || 1);
+  const nowMs = new Date().getTime();
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(propKey);
+    let rec = null;
+    if (raw) {
+      try { rec = JSON.parse(raw); } catch (e) { rec = null; }
+    }
+    if (!rec || typeof rec.firstRequest !== "number" || (nowMs - rec.firstRequest) >= windowMs) {
+      rec = { count: 1, firstRequest: nowMs, windowMs: windowMs };
+      props.setProperty(propKey, JSON.stringify(rec));
+      return { allowed: true, remaining: maxReq - 1 };
+    }
+    if (rec.count >= maxReq) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((windowMs - (nowMs - rec.firstRequest)) / 1000));
+      return { allowed: false, remaining: 0, retryAfterSeconds: retryAfterSeconds };
+    }
+    rec.count = (Number(rec.count) || 0) + 1;
+    props.setProperty(propKey, JSON.stringify(rec));
+    return { allowed: true, remaining: Math.max(0, maxReq - rec.count) };
+  } catch (e) {
+    // Fail-safe allow only if rate-limit store transiently unavailable without opening auth bypass
+    return { allowed: true, remaining: maxReq };
+  }
+}
+
+// ==================== OWNER AUTHENTICATION & SECURITY MANAGEMENT ====================
 
 function getConfiguredOwnerPassword(ss) {
   try {
@@ -376,9 +578,27 @@ function getConfiguredOwnerPassword(ss) {
 
 function ownerLogin(data) {
   const ss = getSpreadsheet();
+  const meta = {
+    deviceId: (data && data.deviceId) ? String(data.deviceId).slice(0, 80) : (_currentRequestMeta.deviceId || "owner_client"),
+    userAgent: (data && data.userAgent) ? String(data.userAgent).slice(0, 160) : (_currentRequestMeta.userAgent || "Browser")
+  };
+
+  const rl = checkRateLimit(meta.deviceId, "ownerLogin", 3, 15);
+  if (!rl.allowed) {
+    logAudit("ownerLogin", "Owner", meta.deviceId, meta.userAgent, "FAILED", { reason: "rate_limit", retryAfterSeconds: rl.retryAfterSeconds });
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Terlalu banyak percobaan login Owner. Silakan coba lagi dalam " + Math.ceil((rl.retryAfterSeconds || 60) / 60) + " menit.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
   const password = data && data.password ? String(data.password) : "";
   const expected = getConfiguredOwnerPassword(ss);
   if (!expected) {
+    logAudit("ownerLogin", "Owner", meta.deviceId, meta.userAgent, "FAILED", { reason: "not_configured" });
     return {
       status: "error",
       notConfigured: true,
@@ -386,7 +606,8 @@ function ownerLogin(data) {
       backendVersion: BACKEND_VERSION
     };
   }
-  if (!password || password !== expected) {
+  if (!password || !verifySecret(password, expected)) {
+    logAudit("ownerLogin", "Owner", meta.deviceId, meta.userAgent, "FAILED", { reason: "invalid_password" });
     return {
       status: "error",
       message: "Password Owner salah!",
@@ -396,11 +617,19 @@ function ownerLogin(data) {
 
   const token = Utilities.getUuid().replace(/-/g, "") + "-" + new Date().getTime().toString(36);
   const ttlSeconds = 21600; // 6 jam di CacheService
-  const expiresAtMs = new Date().getTime() + 8 * 3600 * 1000; // 8 jam di ScriptProperties
+  const nowMs = new Date().getTime();
+  const expiresAtMs = nowMs + 8 * 3600 * 1000; // 8 jam di ScriptProperties
+  const nowIso = getJakartaIsoTimestampStr();
   const sessionObj = {
+    tokenId: token.slice(0, 8),
+    tokenMask: maskTokenPreview(token),
     ownerName: "Owner",
-    issuedAt: getJakartaTimestampStr(),
-    expiresAt: expiresAtMs
+    issuedAt: nowIso,
+    lastUsedAt: nowIso,
+    lastUsedMs: nowMs,
+    expiresAt: expiresAtMs,
+    deviceId: meta.deviceId,
+    userAgent: meta.userAgent
   };
   const serializedSession = JSON.stringify(sessionObj);
 
@@ -414,9 +643,7 @@ function ownerLogin(data) {
 
   try {
     const props = PropertiesService.getScriptProperties();
-    // Bersihkan token kedaluwarsa secara berkala agar tidak menumpuk
     const allProps = props.getProperties();
-    const nowMs = new Date().getTime();
     for (var k in allProps) {
       if (k.indexOf("OWNER_TOKEN_") === 0) {
         try {
@@ -434,12 +661,15 @@ function ownerLogin(data) {
   } catch (e) {}
 
   if (!cacheSaved && !propSaved) {
+    logAudit("ownerLogin", "Owner", meta.deviceId, meta.userAgent, "FAILED", { reason: "storage_error" });
     return {
       status: "error",
       message: "Gagal menyimpan sesi Owner pada penyimpanan server.",
       backendVersion: BACKEND_VERSION
     };
   }
+
+  logAudit("ownerLogin", "Owner", meta.deviceId, meta.userAgent, "SUCCESS", { sessionId: sessionObj.tokenId });
 
   return {
     status: "success",
@@ -470,6 +700,7 @@ function ownerLogout(token) {
   } catch (e) {}
 
   if (!cacheRemoved || !propRemoved) {
+    logAudit("ownerLogout", "Owner", "", "", "FAILED", { sessionMask: maskTokenPreview(cleanToken) });
     return {
       status: "error",
       message: "Gagal mencabut sesi Owner secara penuh dari penyimpanan server.",
@@ -477,7 +708,23 @@ function ownerLogout(token) {
     };
   }
 
+  logAudit("ownerLogout", "Owner", "", "", "SUCCESS", { sessionMask: maskTokenPreview(cleanToken) });
   return { status: "success", message: "Logout berhasil", backendVersion: BACKEND_VERSION };
+}
+
+function touchOwnerSessionLastUsed(key) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(key);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (!obj) return;
+    const nowMs = new Date().getTime();
+    if (obj.lastUsedMs && (nowMs - obj.lastUsedMs) < 30000) return;
+    obj.lastUsedMs = nowMs;
+    obj.lastUsedAt = getJakartaIsoTimestampStr();
+    props.setProperty(key, JSON.stringify(obj));
+  } catch (e) {}
 }
 
 function checkOwnerToken(token) {
@@ -497,7 +744,8 @@ function checkOwnerToken(token) {
       try {
         const obj = JSON.parse(cached);
         if (obj && typeof obj.expiresAt === "number" && obj.expiresAt >= nowMs) {
-          return { ok: true, ownerName: obj.ownerName || "Owner" };
+          touchOwnerSessionLastUsed(key);
+          return { ok: true, ownerName: obj.ownerName || "Owner", sessionId: obj.tokenId || cleanToken.slice(0, 8), tokenMask: maskTokenPreview(cleanToken) };
         }
         try { CacheService.getScriptCache().remove(key); } catch (rmErr) {}
       } catch (parseErr) {
@@ -521,7 +769,8 @@ function checkOwnerToken(token) {
       }
       if (obj && typeof obj.expiresAt === "number" && obj.expiresAt >= nowMs) {
         try { CacheService.getScriptCache().put(key, rawProp, 21600); } catch (err) {}
-        return { ok: true, ownerName: obj.ownerName || "Owner" };
+        touchOwnerSessionLastUsed(key);
+        return { ok: true, ownerName: obj.ownerName || "Owner", sessionId: obj.tokenId || cleanToken.slice(0, 8), tokenMask: maskTokenPreview(cleanToken) };
       } else {
         try { props.deleteProperty(key); } catch (delErr) {}
       }
@@ -538,7 +787,684 @@ function verifyOwnerSession(token) {
   if (!chk.ok) {
     return { status: "error", valid: false, authRequired: true, message: chk.message, backendVersion: BACKEND_VERSION };
   }
-  return { status: "success", valid: true, ownerName: chk.ownerName, backendVersion: BACKEND_VERSION };
+  return { status: "success", valid: true, ownerName: chk.ownerName, sessionId: chk.sessionId, backendVersion: BACKEND_VERSION };
+}
+
+function changeOwnerPassword(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("changeOwnerPassword", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const currentPassword = data && data.currentPassword !== undefined ? String(data.currentPassword) : "";
+  const newPassword = data && data.newPassword !== undefined ? String(data.newPassword) : "";
+
+  if (!currentPassword || !newPassword) {
+    logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "missing_fields" });
+    return { status: "error", message: "Password saat ini dan password baru wajib diisi.", backendVersion: BACKEND_VERSION };
+  }
+
+  if (newPassword.length < 8 || !/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+    logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "weak_password" });
+    return { status: "error", message: "Password baru minimal 8 karakter dan wajib mengandung huruf serta angka.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const expected = getConfiguredOwnerPassword(ss);
+  if (!expected || !verifySecret(currentPassword, expected)) {
+    logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "wrong_current_password" });
+    return { status: "error", message: "Password saat ini salah!", backendVersion: BACKEND_VERSION };
+  }
+
+  if (currentPassword === newPassword) {
+    logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "same_as_current" });
+    return { status: "error", message: "Password baru tidak boleh sama dengan password saat ini.", backendVersion: BACKEND_VERSION };
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  let history = [];
+  try {
+    const rawHist = props.getProperty("OWNER_PASSWORD_HISTORY");
+    if (rawHist) {
+      const parsed = JSON.parse(rawHist);
+      if (Array.isArray(parsed)) history = parsed;
+    }
+  } catch (e) { history = []; }
+
+  const recentFive = history.slice(-5);
+  for (let i = 0; i < recentFive.length; i++) {
+    if (verifySecret(newPassword, recentFive[i])) {
+      logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "password_history_reuse" });
+      return { status: "error", message: "Password baru tidak boleh sama dengan 5 password terakhir.", backendVersion: BACKEND_VERSION };
+    }
+  }
+
+  const normalizedOldHash = expected.indexOf("sha256$") === 0 ? expected : hashSecret(currentPassword);
+  if (recentFive.length === 0) {
+    recentFive.push(normalizedOldHash);
+  }
+  const newHash = hashSecret(newPassword);
+  recentFive.push(newHash);
+  const trimmedHistory = recentFive.slice(-5);
+
+  try {
+    const sSheet = ss.getSheetByName("Settings");
+    if (sSheet) {
+      sSheet.getRange("A10").setValue("owner_password");
+      sSheet.getRange("B10").setValue(newHash);
+    }
+    props.setProperty("OWNER_PASSWORD", newHash);
+    props.setProperty("OWNER_PASSWORD_HISTORY", JSON.stringify(trimmedHistory));
+  } catch (e) {
+    logAudit("changeOwnerPassword", "Owner", "", "", "FAILED", { reason: "save_error" });
+    return { status: "error", message: "Gagal menyimpan password baru di server.", backendVersion: BACKEND_VERSION };
+  }
+
+  // Invalidate ALL active Owner sessions
+  let invalidatedCount = 0;
+  try {
+    const cache = CacheService.getScriptCache();
+    const allProps = props.getProperties();
+    for (var k in allProps) {
+      if (k.indexOf("OWNER_TOKEN_") === 0) {
+        try { cache.remove(k); } catch (e1) {}
+        try { props.deleteProperty(k); } catch (e2) {}
+        invalidatedCount++;
+      }
+    }
+  } catch (e) {}
+
+  logAudit("changeOwnerPassword", "Owner", "", "", "SUCCESS", {
+    oldPasswordHashPrefix: sha256Hex(normalizedOldHash).slice(0, 12),
+    newPasswordHashPrefix: sha256Hex(newHash).slice(0, 12),
+    invalidatedSessions: invalidatedCount
+  });
+
+  return {
+    status: "success",
+    message: "Password Owner berhasil diubah. Semua sesi aktif telah dikeluarkan, silakan login ulang.",
+    invalidatedSessions: invalidatedCount,
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function getOwnerSessions(ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("getOwnerSessions", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const cleanCurrent = String(ownerToken || "").trim();
+  const currentKey = "OWNER_TOKEN_" + cleanCurrent;
+  const nowMs = new Date().getTime();
+  const sessions = [];
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const allProps = props.getProperties();
+    for (var k in allProps) {
+      if (k.indexOf("OWNER_TOKEN_") === 0) {
+        try {
+          const obj = JSON.parse(allProps[k]);
+          if (!obj || typeof obj.expiresAt !== "number" || obj.expiresAt < nowMs) {
+            props.deleteProperty(k);
+            continue;
+          }
+          const tokSuffix = k.slice("OWNER_TOKEN_".length);
+          sessions.push({
+            sessionId: obj.tokenId || tokSuffix.slice(0, 8),
+            tokenMask: obj.tokenMask || maskTokenPreview(tokSuffix),
+            issuedAt: obj.issuedAt || "-",
+            lastUsedAt: obj.lastUsedAt || obj.issuedAt || "-",
+            expiresAt: obj.expiresAt,
+            deviceId: obj.deviceId || "-",
+            userAgent: obj.userAgent || "-",
+            isCurrent: k === currentKey
+          });
+        } catch (err) {
+          props.deleteProperty(k);
+        }
+      }
+    }
+  } catch (e) {
+    return { status: "error", message: "Gagal memuat daftar sesi Owner.", backendVersion: BACKEND_VERSION };
+  }
+
+  sessions.sort(function(a, b) {
+    if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+    return String(b.lastUsedAt).localeCompare(String(a.lastUsedAt));
+  });
+
+  logAudit("getOwnerSessions", "Owner", "", "", "SUCCESS", { count: sessions.length });
+  return { status: "success", data: sessions, backendVersion: BACKEND_VERSION };
+}
+
+function revokeOwnerSession(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("revokeOwnerSession", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const cleanCurrent = String(ownerToken || "").trim();
+  const currentKey = "OWNER_TOKEN_" + cleanCurrent;
+  const revokeAllOthers = !!(data && data.revokeAllOthers);
+  const targetToken = data && data.tokenToRevoke ? String(data.tokenToRevoke).trim() : "";
+  const targetSessionId = data && data.sessionId ? String(data.sessionId).trim() : "";
+
+  if (!revokeAllOthers && !targetToken && !targetSessionId) {
+    return { status: "error", message: "Target sesi yang akan dicabut wajib diisi.", backendVersion: BACKEND_VERSION };
+  }
+
+  let revokedCount = 0;
+  try {
+    const cache = CacheService.getScriptCache();
+    const props = PropertiesService.getScriptProperties();
+    const allProps = props.getProperties();
+
+    for (var k in allProps) {
+      if (k.indexOf("OWNER_TOKEN_") !== 0) continue;
+      const rawTok = k.slice("OWNER_TOKEN_".length);
+      let obj = null;
+      try { obj = JSON.parse(allProps[k]); } catch (e) { obj = null; }
+      const sid = (obj && obj.tokenId) ? obj.tokenId : rawTok.slice(0, 8);
+      const tMask = (obj && obj.tokenMask) ? obj.tokenMask : maskTokenPreview(rawTok);
+
+      let matched = false;
+      if (revokeAllOthers) {
+        matched = (k !== currentKey);
+      } else {
+        matched = (targetToken && (rawTok === targetToken || tMask === targetToken)) || (targetSessionId && sid === targetSessionId);
+      }
+      if (matched) {
+        cache.remove(k);
+        props.deleteProperty(k);
+        revokedCount++;
+      }
+    }
+  } catch (e) {
+    logAudit("revokeOwnerSession", "Owner", "", "", "FAILED", { reason: "storage_error" });
+    return { status: "error", message: "Gagal mencabut sesi target.", backendVersion: BACKEND_VERSION };
+  }
+
+  if (revokedCount === 0 && !revokeAllOthers) {
+    return { status: "error", message: "Sesi target tidak ditemukan atau sudah berakhir.", backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("revokeOwnerSession", "Owner", "", "", "SUCCESS", { revokeAllOthers: revokeAllOthers, targetSessionId: targetSessionId || "-", revokedCount: revokedCount });
+  return {
+    status: "success",
+    revokedCount: revokedCount,
+    message: revokeAllOthers ? (revokedCount + " sesi lainnya berhasil dicabut.") : "Sesi berhasil dicabut.",
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function getAuditLogs(filters, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("getAuditLogs", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const sheet = ensureAuditLogSheet(ss);
+  const values = sheet.getDataRange().getValues();
+  const fAction = filters && filters.action ? normalizeTextKey(filters.action) : "";
+  const fActor = filters && filters.actor ? normalizeTextKey(filters.actor) : "";
+  const fDateFrom = filters && filters.dateFrom ? toYmd(filters.dateFrom) : "";
+  const fDateTo = filters && filters.dateTo ? toYmd(filters.dateTo) : "";
+  const limit = Math.min(200, Math.max(1, parseInt(filters && filters.limit, 10) || 50));
+
+  const logs = [];
+  for (let i = 1; i < values.length; i++) {
+    const ts = String(values[i][0] || "").trim();
+    if (!ts) continue;
+    const actionVal = String(values[i][1] || "");
+    const actorVal = String(values[i][2] || "");
+    if (fAction && normalizeTextKey(actionVal).indexOf(fAction) === -1) continue;
+    if (fActor && normalizeTextKey(actorVal).indexOf(fActor) === -1) continue;
+    const rowYmd = ts.slice(0, 10);
+    if (fDateFrom && rowYmd < fDateFrom) continue;
+    if (fDateTo && rowYmd > fDateTo) continue;
+
+    logs.push({
+      timestamp: ts,
+      action: actionVal,
+      actor: actorVal,
+      ipAddress: String(values[i][3] || "-"),
+      userAgent: String(values[i][4] || "-"),
+      status: String(values[i][5] || "-"),
+      details: String(values[i][6] || "{}")
+    });
+    if (logs.length >= limit) break;
+  }
+
+  return { status: "success", data: logs, backendVersion: BACKEND_VERSION };
+}
+
+// ==================== EMPLOYEE PIN AUTHENTICATION ====================
+
+function ensurePinColumns(sheet) {
+  if (!sheet) return;
+  const hK = String(sheet.getRange(1, 11).getValue() || "").trim();
+  const hL = String(sheet.getRange(1, 12).getValue() || "").trim();
+  const hM = String(sheet.getRange(1, 13).getValue() || "").trim();
+  if (hK !== "PinAbsen") sheet.getRange(1, 11).setValue("PinAbsen");
+  if (hL !== "PinCreatedAt") sheet.getRange(1, 12).setValue("PinCreatedAt");
+  if (hM !== "PinLastUsed") sheet.getRange(1, 13).setValue("PinLastUsed");
+}
+
+function findActiveEmployeeRowForAuth(ss, identifier) {
+  const sheet = (ss || getSpreadsheet()).getSheetByName("DataPegawai");
+  if (!sheet) return { ok: false, reason: "no_sheet" };
+  ensurePinColumns(sheet);
+  const values = sheet.getDataRange().getValues();
+  const cleanIdOrName = String(identifier || "").trim();
+  if (!cleanIdOrName) return { ok: false, reason: "empty" };
+  const normKey = normalizeTextKey(cleanIdOrName);
+
+  const idMatches = [];
+  const nameMatches = [];
+
+  for (let i = 1; i < values.length; i++) {
+    const nama = values[i][0] ? String(values[i][0]).trim() : "";
+    if (!nama) continue;
+    const statusRaw = (values[i][7] !== null && values[i][7] !== undefined) ? String(values[i][7]).trim().toUpperCase() : "";
+    if (statusRaw !== "AKTIF") continue;
+
+    const idPegawai = values[i][1] ? String(values[i][1]).trim() : "";
+    const rec = {
+      rowIndex: i + 1,
+      nama: nama,
+      idPegawai: idPegawai,
+      pinHash: values[i][10] ? String(values[i][10]).trim() : "",
+      pinCreatedAt: values[i][11] ? String(values[i][11]).trim() : "",
+      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : ""
+    };
+
+    if (idPegawai && normalizeTextKey(idPegawai) === normKey) {
+      idMatches.push(rec);
+    }
+    if (normalizeTextKey(nama) === normKey) {
+      nameMatches.push(rec);
+    }
+  }
+
+  if (idMatches.length === 1) return { ok: true, sheet: sheet, employee: idMatches[0] };
+  if (idMatches.length > 1) return { ok: false, reason: "ambiguous" };
+  if (nameMatches.length === 1) return { ok: true, sheet: sheet, employee: nameMatches[0] };
+  if (nameMatches.length > 1) return { ok: false, reason: "ambiguous_name" };
+  return { ok: false, reason: "not_found" };
+}
+
+function setEmployeePin(data, ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("setEmployeePin", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const identifier = (data && (data.idPegawai || data.nama)) ? String(data.idPegawai || data.nama).trim() : "";
+  const pin = (data && data.pin !== undefined && data.pin !== null) ? String(data.pin).trim() : "";
+
+  if (!identifier) {
+    return { status: "error", message: "Nama atau ID Pegawai wajib diisi.", backendVersion: BACKEND_VERSION };
+  }
+  if (!/^\d{4,6}$/.test(pin)) {
+    return { status: "error", message: "PIN harus terdiri dari 4 sampai 6 digit angka.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    const msg = lookup.reason === "ambiguous_name"
+      ? "Nama pegawai duplikat. Gunakan ID Pegawai untuk mengatur PIN."
+      : "Pegawai aktif tidak ditemukan.";
+    return { status: "error", message: msg, backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  const nowIso = getJakartaIsoTimestampStr();
+  const pinHash = hashSecret(pin);
+
+  lookup.sheet.getRange(emp.rowIndex, 11).setValue(pinHash);
+  lookup.sheet.getRange(emp.rowIndex, 12).setValue(nowIso);
+
+  // Clear any existing brute-force lockout upon Owner PIN reset
+  try {
+    const lockKey = "EMP_LOCK_" + sha256Hex((emp.idPegawai || emp.nama).toLowerCase()).slice(0, 24);
+    PropertiesService.getScriptProperties().deleteProperty(lockKey);
+  } catch (e) {}
+
+  logAudit("setEmployeePin", "Owner", "", "", "SUCCESS", { idPegawai: emp.idPegawai || "-", nama: emp.nama });
+
+  return {
+    status: "success",
+    message: "PIN absensi untuk " + emp.nama + " berhasil diatur.",
+    nama: emp.nama,
+    idPegawai: emp.idPegawai,
+    pinCreatedAt: nowIso,
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function employeeLogin(data) {
+  const identifier = (data && (data.identifier || data.idPegawai || data.nama)) ? String(data.identifier || data.idPegawai || data.nama).trim() : "";
+  const pin = (data && data.pin !== undefined && data.pin !== null) ? String(data.pin).trim() : "";
+  const deviceId = (data && data.deviceId) ? String(data.deviceId).slice(0, 80) : (_currentRequestMeta.deviceId || "emp_client");
+  const userAgent = (data && data.userAgent) ? String(data.userAgent).slice(0, 160) : (_currentRequestMeta.userAgent || "Browser");
+
+  const accountKey = normalizeTextKey(identifier || "-");
+  const rl = checkRateLimit(accountKey + "|" + deviceId, "employeeLogin", 5, 15);
+  if (!rl.allowed) {
+    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { reason: "rate_limit", retryAfterSeconds: rl.retryAfterSeconds });
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Terlalu banyak percobaan login. Silakan coba lagi dalam " + Math.ceil((rl.retryAfterSeconds || 60) / 60) + " menit.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  if (!identifier || !pin) {
+    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { reason: "missing_credentials" });
+    return { status: "error", message: "Nama / ID Pegawai dan PIN wajib diisi.", backendVersion: BACKEND_VERSION };
+  }
+
+  if (!/^\d{4,6}$/.test(pin)) {
+    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { reason: "invalid_pin_format" });
+    return { status: "error", message: "Format PIN harus 4–6 digit angka.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { reason: lookup.reason });
+    if (lookup.reason === "ambiguous_name") {
+      return {
+        status: "error",
+        ambiguousName: true,
+        message: "Terdapat nama pegawai yang sama. Silakan login menggunakan ID Pegawai Anda.",
+        backendVersion: BACKEND_VERSION
+      };
+    }
+    return { status: "error", message: "Nama / ID Pegawai atau PIN tidak valid.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  const props = PropertiesService.getScriptProperties();
+  const lockKey = "EMP_LOCK_" + sha256Hex((emp.idPegawai || emp.nama).toLowerCase()).slice(0, 24);
+  const nowMs = new Date().getTime();
+
+  let lockRec = { failCount: 0, lockedUntil: 0 };
+  try {
+    const rawLock = props.getProperty(lockKey);
+    if (rawLock) {
+      const parsed = JSON.parse(rawLock);
+      if (parsed && typeof parsed === "object") lockRec = parsed;
+    }
+  } catch (e) {}
+
+  if (lockRec.lockedUntil && lockRec.lockedUntil > nowMs) {
+    const waitMins = Math.max(1, Math.ceil((lockRec.lockedUntil - nowMs) / 60000));
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "account_locked", idPegawai: emp.idPegawai || "-" });
+    return {
+      status: "error",
+      locked: true,
+      lockedUntil: lockRec.lockedUntil,
+      message: "Akun terkunci sementara karena 3 kali salah PIN. Coba lagi dalam " + waitMins + " menit.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  if (!emp.pinHash) {
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "pin_not_set", idPegawai: emp.idPegawai || "-" });
+    return {
+      status: "error",
+      pinNotSet: true,
+      message: "PIN absensi Anda belum diatur. Hubungi Owner untuk mengatur PIN terlebih dahulu.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  if (!verifySecret(pin, emp.pinHash)) {
+    const nextFail = (Number(lockRec.failCount) || 0) + 1;
+    const isNowLocked = nextFail >= 3;
+    const nextLockedUntil = isNowLocked ? (nowMs + 15 * 60 * 1000) : 0;
+    try {
+      props.setProperty(lockKey, JSON.stringify({ failCount: nextFail, lockedUntil: nextLockedUntil }));
+    } catch (e) {}
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", {
+      reason: "wrong_pin",
+      failCount: nextFail,
+      locked: isNowLocked,
+      idPegawai: emp.idPegawai || "-"
+    });
+    if (isNowLocked) {
+      return {
+        status: "error",
+        locked: true,
+        lockedUntil: nextLockedUntil,
+        message: "PIN salah 3 kali berturut-turut. Akun terkunci selama 15 menit.",
+        backendVersion: BACKEND_VERSION
+      };
+    }
+    return {
+      status: "error",
+      remainingAttempts: 3 - nextFail,
+      message: "PIN salah! Sisa percobaan sebelum terkunci: " + (3 - nextFail) + ".",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  // PIN verified: reset lock & upgrade legacy plaintext numeric PIN if typed manually in Sheets
+  try { props.deleteProperty(lockKey); } catch (e) {}
+  const nowIso = getJakartaIsoTimestampStr();
+  if (emp.pinHash.indexOf("sha256$") !== 0) {
+    try {
+      lookup.sheet.getRange(emp.rowIndex, 11).setValue(hashSecret(pin));
+      if (!emp.pinCreatedAt) lookup.sheet.getRange(emp.rowIndex, 12).setValue(nowIso);
+    } catch (e) {}
+  }
+  try {
+    lookup.sheet.getRange(emp.rowIndex, 13).setValue(nowIso);
+  } catch (e) {}
+
+  // Resolve effective outlet/posisi for convenient frontend bootstrap
+  const todayDmy = getJakartaDateStr();
+  let empOutlet = "";
+  let empPosisi = "";
+  try {
+    const ctx = buildAssignmentContext(ss, todayDmy);
+    const assign = getEffectiveWorkAssignment(emp.idPegawai || emp.nama, todayDmy, ctx);
+    empOutlet = assign.outletEfektif || "";
+    empPosisi = assign.posisiPenugasan || assign.posisiPermanen || "";
+  } catch (e) {}
+
+  const token = "EMP-" + Utilities.getUuid().replace(/-/g, "") + "-" + nowMs.toString(36);
+  const expiresAtMs = nowMs + 4 * 3600 * 1000; // 4 jam PropertiesService, 2 jam CacheService
+  const sessionObj = {
+    idPegawai: emp.idPegawai || "",
+    nama: emp.nama,
+    outlet: empOutlet,
+    posisi: empPosisi,
+    issuedAt: nowIso,
+    expiresAt: expiresAtMs,
+    deviceId: deviceId
+  };
+  const serialized = JSON.stringify(sessionObj);
+
+  let cacheSaved = false;
+  let propSaved = false;
+  try {
+    CacheService.getScriptCache().put("EMP_TOKEN_" + token, serialized, 7200);
+    cacheSaved = true;
+  } catch (e) {}
+  try {
+    const allProps = props.getProperties();
+    for (var k in allProps) {
+      if (k.indexOf("EMP_TOKEN_") === 0) {
+        try {
+          var o = JSON.parse(allProps[k]);
+          if (!o || !o.expiresAt || o.expiresAt < nowMs) {
+            props.deleteProperty(k);
+          }
+        } catch (err) {
+          props.deleteProperty(k);
+        }
+      }
+    }
+    props.setProperty("EMP_TOKEN_" + token, serialized);
+    propSaved = true;
+  } catch (e) {}
+
+  if (!cacheSaved && !propSaved) {
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "storage_error" });
+    return { status: "error", message: "Gagal menyimpan sesi pegawai di server.", backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("employeeLogin", emp.nama, deviceId, userAgent, "SUCCESS", { idPegawai: emp.idPegawai || "-" });
+
+  return {
+    status: "success",
+    employeeToken: token,
+    nama: emp.nama,
+    idPegawai: emp.idPegawai || "",
+    outlet: empOutlet,
+    posisi: empPosisi,
+    expiresAt: expiresAtMs,
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function checkEmployeeToken(token) {
+  if (!token || typeof token !== "string") {
+    return { ok: false, message: "Autentikasi pegawai diperlukan. Silakan login terlebih dahulu." };
+  }
+  const cleanToken = token.trim();
+  if (!cleanToken || cleanToken.length > 200 || /\s/.test(cleanToken)) {
+    return { ok: false, message: "Sesi pegawai tidak valid. Silakan login ulang." };
+  }
+
+  const key = "EMP_TOKEN_" + cleanToken;
+  const nowMs = new Date().getTime();
+  let sessionObj = null;
+
+  try {
+    const cached = CacheService.getScriptCache().get(key);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed.expiresAt === "number" && parsed.expiresAt >= nowMs) {
+          sessionObj = parsed;
+        } else {
+          try { CacheService.getScriptCache().remove(key); } catch (e1) {}
+        }
+      } catch (err) {
+        try { CacheService.getScriptCache().remove(key); } catch (e1) {}
+      }
+    }
+  } catch (e) {
+    return { ok: false, message: "Gagal memverifikasi sesi pegawai. Silakan login ulang." };
+  }
+
+  if (!sessionObj) {
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const rawProp = props.getProperty(key);
+      if (rawProp) {
+        try {
+          const parsed = JSON.parse(rawProp);
+          if (parsed && typeof parsed.expiresAt === "number" && parsed.expiresAt >= nowMs) {
+            sessionObj = parsed;
+            try { CacheService.getScriptCache().put(key, rawProp, 7200); } catch (e1) {}
+          } else {
+            try { props.deleteProperty(key); } catch (e1) {}
+          }
+        } catch (err) {
+          try { props.deleteProperty(key); } catch (e1) {}
+          return { ok: false, message: "Sesi pegawai tidak valid. Silakan login ulang." };
+        }
+      }
+    } catch (e) {
+      return { ok: false, message: "Gagal memverifikasi sesi pegawai. Silakan login ulang." };
+    }
+  }
+
+  if (!sessionObj || !sessionObj.nama) {
+    return { ok: false, message: "Sesi pegawai tidak valid atau sudah berakhir. Silakan login ulang." };
+  }
+
+  // Re-verify employee is still AKTIF in DataPegawai
+  const ss = getSpreadsheet();
+  const activeEmps = getActiveEmployeesSafe(ss);
+  const matched = findEmployeeInList(activeEmps, sessionObj.idPegawai || sessionObj.nama, sessionObj.nama);
+  if (!matched) {
+    return { ok: false, message: "Akun pegawai berstatus nonaktif atau tidak ditemukan. Silakan hubungi Owner." };
+  }
+
+  return {
+    ok: true,
+    idPegawai: matched.idPegawai || sessionObj.idPegawai || "",
+    nama: matched.nama,
+    outlet: sessionObj.outlet || "",
+    posisi: sessionObj.posisi || ""
+  };
+}
+
+function employeeVerify(token) {
+  const chk = checkEmployeeToken(token);
+  if (!chk.ok) {
+    return { status: "error", valid: false, authRequired: true, message: chk.message, backendVersion: BACKEND_VERSION };
+  }
+  return {
+    status: "success",
+    valid: true,
+    nama: chk.nama,
+    idPegawai: chk.idPegawai,
+    outlet: chk.outlet,
+    posisi: chk.posisi,
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function employeeLogout(token) {
+  if (!token || typeof token !== "string" || token.trim() === "") {
+    return { status: "error", message: "Token pegawai tidak valid.", backendVersion: BACKEND_VERSION };
+  }
+  const cleanToken = token.trim();
+  const key = "EMP_TOKEN_" + cleanToken;
+  let actor = "Pegawai";
+  try {
+    const existing = PropertiesService.getScriptProperties().getProperty(key);
+    if (existing) {
+      const parsed = JSON.parse(existing);
+      if (parsed && parsed.nama) actor = parsed.nama;
+    }
+  } catch (e) {}
+
+  let cacheRemoved = false;
+  let propRemoved = false;
+  try {
+    CacheService.getScriptCache().remove(key);
+    cacheRemoved = true;
+  } catch (e) {}
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(key);
+    propRemoved = true;
+  } catch (e) {}
+
+  if (!cacheRemoved || !propRemoved) {
+    logAudit("employeeLogout", actor, "", "", "FAILED", { sessionMask: maskTokenPreview(cleanToken) });
+    return { status: "error", message: "Gagal mencabut sesi pegawai.", backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("employeeLogout", actor, "", "", "SUCCESS", { sessionMask: maskTokenPreview(cleanToken) });
+  return { status: "success", message: "Logout berhasil", backendVersion: BACKEND_VERSION };
 }
 
 // ==================== SHEET INITIALIZERS ====================
@@ -616,7 +1542,10 @@ function serializeEmployeeForOwner(emp) {
     tanggalNonAktif: emp.tanggalNonAktif || "",
     status: emp.status || "AKTIF",
     missingId: !!emp.missingId,
-    duplicateName: !!emp.duplicateName
+    duplicateName: !!emp.duplicateName,
+    hasPin: !!emp.hasPin,
+    pinCreatedAt: emp.pinCreatedAt || "",
+    pinLastUsed: emp.pinLastUsed || ""
   };
 }
 
@@ -627,7 +1556,7 @@ function getActiveEmployeesSafe(ss) {
   const rawList = [];
   const nameCounts = {};
 
-  // (A-J): Nama(0), ID(1), email(2), password(3 - NEVER EXPOSE), no_Telepon(4), TglAktif(5), TglNonAktif(6), Status(7), SidikWajah(8 - NEVER EXPOSE), FaceDescriptor(9 - NEVER EXPOSE)
+  // (A-M): Nama(0), ID(1), email(2), password(3 - NEVER EXPOSE), no_Telepon(4), TglAktif(5), TglNonAktif(6), Status(7), SidikWajah(8 - NEVER EXPOSE), FaceDescriptor(9 - NEVER EXPOSE), PinAbsen(10 - NEVER EXPOSE), PinCreatedAt(11), PinLastUsed(12)
   for (let i = 1; i < values.length; i++) {
     const nama = values[i][0] ? String(values[i][0]).trim() : "";
     if (!nama) continue;
@@ -645,7 +1574,10 @@ function getActiveEmployeesSafe(ss) {
       noTelepon: values[i][4] ? String(values[i][4]).trim() : "",
       tanggalAktif: parseSheetDate(values[i][5]),
       tanggalNonAktif: parseSheetDate(values[i][6]),
-      status: "AKTIF"
+      status: "AKTIF",
+      hasPin: !!(values[i][10] && String(values[i][10]).trim() !== ""),
+      pinCreatedAt: values[i][11] ? String(values[i][11]).trim() : "",
+      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : ""
     });
   }
 
@@ -660,7 +1592,10 @@ function getActiveEmployeesSafe(ss) {
       tanggalNonAktif: emp.tanggalNonAktif,
       status: emp.status,
       missingId: !emp.idPegawai,
-      duplicateName: (nameCounts[normName] || 0) > 1
+      duplicateName: (nameCounts[normName] || 0) > 1,
+      hasPin: emp.hasPin,
+      pinCreatedAt: emp.pinCreatedAt,
+      pinLastUsed: emp.pinLastUsed
     };
   });
 }
@@ -1311,6 +2246,8 @@ function getDataPenempatan(ownerToken) {
   }
 
   const ss = getSpreadsheet();
+  const pegSheet = ss.getSheetByName("DataPegawai");
+  if (pegSheet) ensurePinColumns(pegSheet);
   ensureDataPenempatanSheet(ss);
   const ctx = buildAssignmentContext(ss);
   const todayYmd = toYmd(getJakartaDateStr());
@@ -2826,11 +3763,37 @@ function getKehadiranHarian(paramTanggal, ownerToken) {
   return res;
 }
 
-function getPegawaiDetail(nama, idPegawai, paramTanggal, ownerToken) {
+function getPegawaiDetail(nama, idPegawai, paramTanggal, authOrToken) {
+  const tokens = (authOrToken && typeof authOrToken === "object")
+    ? authOrToken
+    : { ownerToken: authOrToken || "", employeeToken: "" };
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+
+  if (!ownerCheck.ok && !empCheck.ok) {
+    logAudit("getPegawaiDetail", nama || idPegawai || "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan untuk mengakses detail pegawai.", backendVersion: BACKEND_VERSION };
+  }
+
+  let effectiveLookupId = idPegawai || nama;
+  let effectiveLookupName = nama;
+  if (!ownerCheck.ok && empCheck.ok) {
+    if (nama && normalizeTextKey(nama) !== normalizeTextKey(empCheck.nama)) {
+      logAudit("getPegawaiDetail", empCheck.nama, "", "", "FAILED", { reason: "cross_employee_denied", requestedNama: nama });
+      return { status: "error", authRequired: true, message: "Akses ditolak: hanya diperbolehkan mengakses data Anda sendiri.", backendVersion: BACKEND_VERSION };
+    }
+    if (idPegawai && empCheck.idPegawai && normalizeTextKey(idPegawai) !== normalizeTextKey(empCheck.idPegawai)) {
+      logAudit("getPegawaiDetail", empCheck.nama, "", "", "FAILED", { reason: "cross_employee_id_denied", requestedId: idPegawai });
+      return { status: "error", authRequired: true, message: "Akses ditolak: hanya diperbolehkan mengakses data Anda sendiri.", backendVersion: BACKEND_VERSION };
+    }
+    effectiveLookupId = empCheck.idPegawai || empCheck.nama;
+    effectiveLookupName = empCheck.nama;
+  }
+
   const ss = getSpreadsheet();
   const targetDmy = toDmy(paramTanggal) || getJakartaDateStr();
   const ctx = buildAssignmentContext(ss, targetDmy);
-  const emp = findEmployeeInList(ctx.employees, idPegawai || nama, nama);
+  const emp = findEmployeeInList(ctx.employees, effectiveLookupId, effectiveLookupName);
   if (!emp) {
     return { status: "error", message: "Pegawai tidak ditemukan.", backendVersion: BACKEND_VERSION };
   }
@@ -2838,9 +3801,9 @@ function getPegawaiDetail(nama, idPegawai, paramTanggal, ownerToken) {
     ? Object.assign({}, ctx, { referenceMinutes: getJakartaNowMinutes() })
     : ctx;
   const assignment = getEffectiveWorkAssignment(emp.idPegawai || emp.nama, targetDmy, assignmentCtx);
-  const isOwner = ownerToken ? checkOwnerToken(ownerToken).ok : false;
 
-  if (!isOwner) {
+  if (!ownerCheck.ok) {
+    logAudit("getPegawaiDetail", empCheck.nama, "", "", "SUCCESS", { self: true });
     return {
       status: "success",
       pegawai: serializeEmployeePublic(emp),
@@ -2857,6 +3820,7 @@ function getPegawaiDetail(nama, idPegawai, paramTanggal, ownerToken) {
     return a.tanggal === targetDmy && employeeMatches(a.idPegawai, a.nama, emp);
   }) || null;
 
+  logAudit("getPegawaiDetail", "Owner", "", "", "SUCCESS", { targetNama: emp.nama });
   return {
     status: "success",
     pegawai: serializeEmployeeForOwner(emp),
@@ -2870,7 +3834,50 @@ function getPegawaiDetail(nama, idPegawai, paramTanggal, ownerToken) {
 
 // ==================== PROCESS FORM (DATANG / PULANG / IZIN) ====================
 
-function processForm(data) {
+function processForm(data, authTokens) {
+  const empTok = (authTokens && authTokens.employeeToken) || (data && data.employeeToken) || "";
+  const empAuth = checkEmployeeToken(empTok);
+  if (!empAuth.ok) {
+    logAudit("processForm", (data && (data.nama || data.idPegawai)) || "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return {
+      status: "error",
+      authRequired: true,
+      message: empAuth.message || "Autentikasi pegawai diperlukan sebelum mengirim absensi.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  if (data && data.nama && normalizeTextKey(data.nama) !== normalizeTextKey(empAuth.nama)) {
+    logAudit("processForm", empAuth.nama, "", "", "FAILED", { reason: "identity_spoofing_nama", requestedNama: data.nama });
+    return {
+      status: "error",
+      authRequired: true,
+      message: "Akses ditolak: nama pegawai tidak sesuai dengan akun yang sedang login.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+  if (data && data.idPegawai && empAuth.idPegawai && normalizeTextKey(data.idPegawai) !== normalizeTextKey(empAuth.idPegawai)) {
+    logAudit("processForm", empAuth.nama, "", "", "FAILED", { reason: "identity_spoofing_id", requestedId: data.idPegawai });
+    return {
+      status: "error",
+      authRequired: true,
+      message: "Akses ditolak: ID pegawai tidak sesuai dengan akun yang sedang login.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  const rl = checkRateLimit(empTok, "processForm", 10, 60);
+  if (!rl.allowed) {
+    logAudit("processForm", empAuth.nama, "", "", "FAILED", { reason: "rate_limit", retryAfterSeconds: rl.retryAfterSeconds });
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Batas pengiriman absensi tercapai (maksimal 10 kali per jam). Coba lagi nanti.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -2890,18 +3897,12 @@ function processForm(data) {
     const lokasiUrl = buildLocationUrl(lat, lng, rawLokasi);
 
     const ctx = buildAssignmentContext(ss, tanggalStr);
-    const emp = findEmployeeInList(ctx.employees, data.idPegawai || data.nama, data.nama);
+    const emp = findEmployeeInList(ctx.employees, empAuth.idPegawai || empAuth.nama, empAuth.nama);
     if (!emp) {
+      logAudit("processForm", empAuth.nama, "", "", "FAILED", { reason: "employee_inactive_or_missing" });
       return {
         status: "error",
-        message: "Pegawai \"" + (data.nama || data.idPegawai || "-") + "\" tidak ditemukan atau berstatus nonaktif.",
-        backendVersion: BACKEND_VERSION
-      };
-    }
-    if (emp.duplicateName && !emp.idPegawai && !(data && data.idPegawai)) {
-      return {
-        status: "error",
-        message: "Nama pegawai duplikat & ID Pegawai belum terisi. Lengkapi ID Pegawai terlebih dahulu.",
+        message: "Pegawai \"" + (empAuth.nama || "-") + "\" tidak ditemukan atau berstatus nonaktif.",
         backendVersion: BACKEND_VERSION
       };
     }
@@ -3040,6 +4041,7 @@ function processForm(data) {
         ]);
       }
 
+      logAudit("processForm", canonicalNama, "", "", "SUCCESS", { status: normStatus, outlet: outIzin, jenis: jenisKeterangan });
       return { status: "success", message: "Data " + jenisKeterangan + " berhasil dicatat.", backendVersion: BACKEND_VERSION };
     }
     
@@ -3213,6 +4215,7 @@ function processForm(data) {
         jam
       ]);
       
+      logAudit("processForm", canonicalNama, "", "", "SUCCESS", { status: "DATANG", outlet: effectiveOutlet, statusMasuk: statusMasuk });
       return {
         status: "success",
         message: "Absen DATANG berhasil dicatat.",
@@ -3405,6 +4408,7 @@ function processForm(data) {
       sheetData.getRange(userRowIndex, 13).setValue(imageUrl);     // M (Foto Pulang)
       sheetData.getRange(userRowIndex, 15).setValue(keteranganPulang); // O (Keterangan Pulang)
       
+      logAudit("processForm", canonicalNama, "", "", "SUCCESS", { status: "PULANG", outlet: rowOutlet, statusPulang: statusPulang, totalJam: totalJamStr });
       return { status: "success", message: "Absen PULANG berhasil dicatat.", backendVersion: BACKEND_VERSION };
     }
     
@@ -3614,19 +4618,47 @@ function saveSettings(data, ownerToken) {
   return { status: "success", message: "Pengaturan berhasil disimpan", backendVersion: BACKEND_VERSION };
 }
 
-function getPegawai() {
+function getPegawai(ownerToken) {
+  const auth = checkOwnerToken(ownerToken);
+  if (!auth.ok) {
+    logAudit("getPegawai", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+  }
   const ss = getSpreadsheet();
+  const pegSheet = ss.getSheetByName("DataPegawai");
+  if (pegSheet) ensurePinColumns(pegSheet);
   const safeEmps = getActiveEmployeesSafe(ss);
   const pegawai = safeEmps.map(function(e) { return e.nama; });
+  logAudit("getPegawai", "Owner", "", "", "SUCCESS", { count: pegawai.length });
   return { status: "success", data: pegawai, backendVersion: BACKEND_VERSION };
 }
 
-function getRiwayat(nama) {
+function getRiwayat(nama, authOrToken) {
+  const tokens = (authOrToken && typeof authOrToken === "object")
+    ? authOrToken
+    : { ownerToken: authOrToken || "", employeeToken: "" };
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+
+  if (!ownerCheck.ok && !empCheck.ok) {
+    logAudit("getRiwayat", nama || "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan untuk melihat riwayat absensi.", backendVersion: BACKEND_VERSION };
+  }
+
+  let targetNama = nama;
+  if (!ownerCheck.ok && empCheck.ok) {
+    if (nama && normalizeTextKey(nama) !== normalizeTextKey(empCheck.nama)) {
+      logAudit("getRiwayat", empCheck.nama, "", "", "FAILED", { reason: "cross_employee_denied", requestedNama: nama });
+      return { status: "error", authRequired: true, message: "Akses ditolak: Anda hanya dapat melihat riwayat Anda sendiri.", backendVersion: BACKEND_VERSION };
+    }
+    targetNama = empCheck.nama;
+  }
+
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName("Data_Absensi");
   const values = sheet.getDataRange().getValues();
   const displayValues = sheet.getDataRange().getDisplayValues();
-  const normNama = normalizeTextKey(nama);
+  const normNama = normalizeTextKey(targetNama);
   const absenceRows = readAllKetidakhadiranRows(ss);
   
   const riwayat = [];
@@ -3679,14 +4711,19 @@ function getRiwayat(nama) {
       if (riwayat.length >= 31) break; 
     }
   }
+  logAudit("getRiwayat", ownerCheck.ok ? "Owner" : empCheck.nama, "", "", "SUCCESS", { targetNama: targetNama, count: riwayat.length });
   return { status: "success", data: riwayat, backendVersion: BACKEND_VERSION };
 }
 
-function getRingkasanHarian(paramTanggal, ownerToken) {
-  const auth = checkOwnerToken(ownerToken);
-  if (!auth.ok) {
-    return { status: "error", authRequired: true, message: auth.message, backendVersion: BACKEND_VERSION };
+function getRingkasanHarian(paramTanggal, ownerToken, employeeToken) {
+  const ownerAuth = ownerToken ? checkOwnerToken(ownerToken) : { ok: false };
+  const empAuth = (!ownerAuth.ok && employeeToken) ? checkEmployeeToken(employeeToken) : { ok: false };
+  if (!ownerAuth.ok && !empAuth.ok) {
+    logAudit("getRingkasanHarian", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: ownerAuth.message || "Autentikasi diperlukan.", backendVersion: BACKEND_VERSION };
   }
+
+  const filterNormNama = (!ownerAuth.ok && empAuth.ok) ? normalizeTextKey(empAuth.nama) : "";
 
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName("Data_Absensi");
@@ -3700,6 +4737,7 @@ function getRingkasanHarian(paramTanggal, ownerToken) {
     for (let i = 1; i < values.length; i++) {
       const rowSts = String(values[i][7] || "").trim().toUpperCase();
       if (!values[i][1] || rowSts === "DIBATALKAN") continue;
+      if (filterNormNama && normalizeTextKey(values[i][1]) !== filterNormNama) continue;
       const rawVal = displayValues[i] && displayValues[i][0] ? displayValues[i][0] : values[i][0];
       const rowDate = toDmy(rawVal);
 
@@ -3746,9 +4784,23 @@ function getRingkasanHarian(paramTanggal, ownerToken) {
     }
   }
 
-  // Sertakan juga status seluruh pegawai aktif dari sumber kebenaran yang sama
+  // Sertakan status kehadiran: penuh untuk Owner, atau strictly data sendiri jika employeeToken
   const fullKehadiran = computeKehadiranHarianInternal(targetDate, ctx);
+  if (filterNormNama) {
+    const selfList = (fullKehadiran.data || []).filter(function(r) {
+      return normalizeTextKey(r.nama) === filterNormNama;
+    });
+    logAudit("getRingkasanHarian", empAuth.nama, "", "", "SUCCESS", { selfOnly: true, tanggal: targetDate });
+    return {
+      status: "success",
+      data: ringkasan,
+      fullList: selfList,
+      tanggal: targetDate,
+      backendVersion: BACKEND_VERSION
+    };
+  }
 
+  logAudit("getRingkasanHarian", "Owner", "", "", "SUCCESS", { tanggal: targetDate, count: ringkasan.length });
   return {
     status: "success",
     data: ringkasan,
@@ -3988,7 +5040,27 @@ function getLaporanBulanan(bulan, ownerToken) {
   return { status: "success", data: hasil, dataOutlet: hasilOutlet, backendVersion: BACKEND_VERSION };
 }
 
-function getRiwayatBulan(nama, bulan) {
+function getRiwayatBulan(nama, bulan, authOrToken) {
+  const tokens = (authOrToken && typeof authOrToken === "object")
+    ? authOrToken
+    : { ownerToken: authOrToken || "", employeeToken: "" };
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+
+  if (!ownerCheck.ok && !empCheck.ok) {
+    logAudit("getRiwayatBulan", nama || "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan untuk melihat riwayat absensi bulanan.", backendVersion: BACKEND_VERSION };
+  }
+
+  let targetNama = nama;
+  if (!ownerCheck.ok && empCheck.ok) {
+    if (nama && normalizeTextKey(nama) !== normalizeTextKey(empCheck.nama)) {
+      logAudit("getRiwayatBulan", empCheck.nama, "", "", "FAILED", { reason: "cross_employee_denied", requestedNama: nama });
+      return { status: "error", authRequired: true, message: "Akses ditolak: Anda hanya dapat melihat riwayat Anda sendiri.", backendVersion: BACKEND_VERSION };
+    }
+    targetNama = empCheck.nama;
+  }
+
   const bulanPrefix = String(bulan || "").split("-"); 
   const mmFilter = (bulanPrefix.length >= 2 && bulanPrefix[1] && bulanPrefix[0])
     ? ("/" + ("0" + bulanPrefix[1]).slice(-2) + "/" + bulanPrefix[0])
@@ -3998,7 +5070,7 @@ function getRiwayatBulan(nama, bulan) {
   const sheet = ss.getSheetByName("Data_Absensi");
   const values = sheet.getDataRange().getValues();
   const displayValues = sheet.getDataRange().getDisplayValues();
-  const normNama = normalizeTextKey(nama);
+  const normNama = normalizeTextKey(targetNama);
   const absenceRows = readAllKetidakhadiranRows(ss);
   
   const riwayat = [];
@@ -4047,6 +5119,7 @@ function getRiwayatBulan(nama, bulan) {
     }
   }
   
+  logAudit("getRiwayatBulan", ownerCheck.ok ? "Owner" : empCheck.nama, "", "", "SUCCESS", { targetNama: targetNama, bulan: bulan || "-", count: riwayat.length });
   // Data di sheet sudah terurut dari row 2 (terbaru) ke bawah, sehingga tidak perlu di-reverse
   return { status: "success", data: riwayat, backendVersion: BACKEND_VERSION };
 }

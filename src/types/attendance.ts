@@ -22,6 +22,39 @@ export interface PegawaiSafe {
   status: string;
   missingId: boolean;
   duplicateName: boolean;
+  hasPin?: boolean;
+  pinCreatedAt?: string;
+  pinLastUsed?: string;
+}
+
+export interface EmployeeSession {
+  employeeToken: string;
+  nama: string;
+  idPegawai: string;
+  outlet: string;
+  posisi: string;
+  expiresAt?: number;
+}
+
+export interface OwnerSessionItem {
+  sessionId: string;
+  tokenMask: string;
+  issuedAt: string;
+  lastUsedAt: string;
+  expiresAt: number;
+  deviceId: string;
+  userAgent: string;
+  isCurrent: boolean;
+}
+
+export interface AuditLogItem {
+  timestamp: string;
+  action: string;
+  actor: string;
+  ipAddress: string;
+  userAgent: string;
+  status: string;
+  details: string;
 }
 
 export interface PenempatanRecord {

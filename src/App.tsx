@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe, FileEdit } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe, FileEdit, Shield, UserCheck } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import ManajemenPegawaiTab from './components/ManajemenPegawaiTab';
 import JadwalRotasiTab from './components/JadwalRotasiTab';
 import KehadiranPegawaiTab from './components/KehadiranPegawaiTab';
 import KoreksiAbsensiTab from './components/KoreksiAbsensiTab';
+import EmployeeLogin from './components/EmployeeLogin';
+import KeamananTab from './components/KeamananTab';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -16,16 +18,22 @@ import {
   isAbortError,
   getOwnerToken,
   setOwnerToken,
+  getEmployeeToken,
+  setEmployeeSession,
+  getSavedEmployeeSession,
+  employeeVerifyApi,
+  employeeLogoutApi,
+  submitAttendanceFormApi,
+  fetchRiwayatBulanApi,
   ownerLoginApi,
   ownerLogoutApi,
   verifyOwnerSessionApi,
   fetchPegawaiDetailApi,
   fetchRingkasanHarianApi,
   fetchLaporanBulananApi,
-  DEFAULT_OFFLINE_PEGAWAI,
   DEFAULT_OFFLINE_SETTINGS
 } from './api';
-import { EffectiveWorkAssignment, KehadiranHarianRow, KehadiranSummaryStats } from './types/attendance';
+import { EffectiveWorkAssignment, EmployeeSession, KehadiranHarianRow, KehadiranSummaryStats } from './types/attendance';
 
 
 const getMapEmbedUrl = (url?: string) => {
@@ -439,34 +447,24 @@ export default function App() {
   }, [activeTab]);
 
 
-  const [daftarPegawai, setDaftarPegawai] = useState<string[]>(() => {
-    try {
-      const cached = localStorage.getItem("cached_pegawai");
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {}
-    return DEFAULT_OFFLINE_PEGAWAI;
+  const [employeeSession, setEmployeeSessionState] = useState<EmployeeSession | null>(() => {
+    const saved = getSavedEmployeeSession();
+    return saved && getEmployeeToken() ? saved : null;
   });
-  const [loadingNames, setLoadingNames] = useState<boolean>(() => {
-    try {
-      const cached = localStorage.getItem("cached_pegawai");
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return false;
-        }
-      }
-    } catch (e) {}
-    return false;
-  });
+  const [verifyingEmployee, setVerifyingEmployee] = useState<boolean>(() => !!getEmployeeToken());
   
-  const [nama, setNama] = useState("");
-  const [posisi, setPosisi] = useState<PosisiPegawai>("");
-  const [outlet, setOutlet] = useState("");
+  const [nama, setNama] = useState(() => {
+    const saved = getSavedEmployeeSession();
+    return (saved && getEmployeeToken()) ? saved.nama : "";
+  });
+  const [posisi, setPosisi] = useState<PosisiPegawai>(() => {
+    const saved = getSavedEmployeeSession();
+    return (saved && getEmployeeToken() && saved.posisi) ? saved.posisi : "";
+  });
+  const [outlet, setOutlet] = useState(() => {
+    const saved = getSavedEmployeeSession();
+    return (saved && getEmployeeToken() && saved.outlet) ? saved.outlet : "";
+  });
   const [keterangan, setKeterangan] = useState<StatusAbsen>("DATANG");
   const [jenisIzin, setJenisIzin] = useState<"Izin" | "Sakit">("Izin");
   const [alasan, setAlasan] = useState("");
@@ -499,7 +497,7 @@ export default function App() {
   const [laporanBulanan, setLaporanBulanan] = useState<any[]>([]);
   const [laporanBulananOutlet, setLaporanBulananOutlet] = useState<any[]>([]);
   const [loadingLaporan, setLoadingLaporan] = useState(false);
-  const [ownerView, setOwnerView] = useState<'harian' | 'kehadiran' | 'jadwal' | 'pegawai' | 'bulanan' | 'outlet' | 'settings' | 'koreksi'>('harian');
+  const [ownerView, setOwnerView] = useState<'harian' | 'kehadiran' | 'jadwal' | 'pegawai' | 'bulanan' | 'outlet' | 'settings' | 'koreksi' | 'keamanan'>('harian');
   const [laporanBulananSubView, setLaporanBulananSubView] = useState<'pegawai' | 'outlet'>('pegawai');
   const [targetJamKerja, setTargetJamKerja] = useState<number>(12);
   const [laporanPosisiFilter, setLaporanPosisiFilter] = useState<'Semua' | 'Admin' | 'Pickup'>('Semua');
@@ -512,7 +510,6 @@ export default function App() {
     return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}`;
   });
 
-  const [errorNames, setErrorNames] = useState("");
   const [errorRiwayat, setErrorRiwayat] = useState("");
   const [errorRingkasan, setErrorRingkasan] = useState("");
   const [errorLaporan, setErrorLaporan] = useState("");
@@ -927,76 +924,49 @@ export default function App() {
     }
   };
 
-  const fetchPegawai = async (urlOverride?: string) => {
-    setLoadingNames(true);
-    setErrorNames("");
-    const targetGasUrl = urlOverride || getActiveGasUrl();
-    try {
-      if (!targetGasUrl) {
-        setDaftarPegawai(DEFAULT_OFFLINE_PEGAWAI);
-        setLoadingNames(false);
-        return;
-      }
-
-      console.log(`[fetchPegawai] Mengirim request ke: ${targetGasUrl}?action=getPegawai`);
-      const res = await fetchWithRetry(`${targetGasUrl}?action=getPegawai`);
-      const data = await parseApiResponse(res, 'getPegawai');
-
-      if (data.status === 'success') {
-        console.log(`[fetchPegawai] Berhasil mendapatkan data pegawai:`, data.data);
-        setDaftarPegawai(data.data);
-        try {
-          localStorage.setItem("cached_pegawai", JSON.stringify(data.data));
-        } catch (e) {}
-        setErrorNames("");
-      } else {
-        throw new Error(data.message || 'Unknown error');
-      }
-    } catch (err: any) {
-      console.warn(`[fetchPegawai] Mode offline / server terkendala:`, err?.message || err);
-      // Coba ambil dari offline cache terlebih dahulu
-      let loaded = false;
-      try {
-        const cached = localStorage.getItem("cached_pegawai");
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setDaftarPegawai(parsed);
-            loaded = true;
-          }
-        }
-      } catch (e) {}
-      if (!loaded) {
-        setDaftarPegawai(DEFAULT_OFFLINE_PEGAWAI);
-      }
-      if (isAbortError(err)) {
-        setErrorNames("Koneksi timeout, sinyal mungkin lemah. Mencoba data cadangan...");
-      } else {
-        setErrorNames("");
-      }
-    } finally {
-      setLoadingNames(false);
-    }
+  const handleEmployeeLoginSuccess = (session: EmployeeSession) => {
+    setEmployeeSession(session);
+    setEmployeeSessionState(session);
+    setNama(session.nama);
+    if (session.outlet) setOutlet(matchOutletOption(session.outlet));
+    if (session.posisi) setPosisi(matchPosisiOption(session.posisi));
   };
 
-  // Bootstrap awal: panggil getSettings() pertama kali ke getActiveGasUrl() (BOOTSTRAP_GAS_URL).
-  // Begitu response datang, kalau response berisi gasUrl yang tidak kosong dan berbeda dari activeGasUrl saat ini:
-  // a. Tes koneksi dulu ke gasUrl tsb dengan ?action=getDeploymentInfo.
-  // b. Kalau sukses (status "success"), panggil setActiveGasUrl(gasUrl) — semua request berikutnya pakai URL ini.
-  // c. Kalau gagal, TETAP pakai BOOTSTRAP_GAS_URL untuk sesi ini, dan tampilkan satu toast peringatan singkat (sekali saja per sesi).
+  const handleEmployeeLogout = async (callServer = true) => {
+    const tok = getEmployeeToken();
+    if (callServer && GAS_URL && tok) {
+      try {
+        await employeeLogoutApi(tok);
+      } catch (err) {
+        console.warn('[employeeLogout] Gagal mencabut sesi di server:', err);
+      }
+    }
+    setEmployeeSession(null);
+    setEmployeeSessionState(null);
+    setNama("");
+    setPosisi("");
+    setOutlet("");
+    setRiwayat([]);
+    setEffectiveAssignment(null);
+    setImageBase64("");
+    setAlasan("");
+    setKeteranganTelat("");
+    setKeteranganPulangCepat("");
+  };
+
+  // Bootstrap awal: panggil getSettings() pertama kali ke getActiveGasUrl() (BOOTSTRAP_GAS_URL),
+  // lalu verifikasi sesi pegawai jika ada employeeToken tersimpan.
   useEffect(() => {
     let isMounted = true;
 
     const bootstrapApp = async () => {
-      const initialUrl = getActiveGasUrl();
-      // Panggil fetchPegawai paralel segera sejak awal tanpa menunggu getSettings & test koneksi
-      if (isMounted) {
-        fetchPegawai(initialUrl);
-      }
+      try {
+        localStorage.removeItem("cached_pegawai");
+      } catch (e) {}
 
+      const initialUrl = getActiveGasUrl();
       const settings = await fetchSettings(initialUrl);
 
-      let effectiveUrl = initialUrl;
       const sheetGasUrl = (settings?.gasUrl && typeof settings.gasUrl === 'string') ? settings.gasUrl.trim() : "";
 
       if (sheetGasUrl && sheetGasUrl !== initialUrl) {
@@ -1014,11 +984,8 @@ export default function App() {
         if (isGasUrlValid) {
           console.log(`[Bootstrap] Switch activeGasUrl dari Settings sheet: ${sheetGasUrl}`);
           setActiveGasUrl(sheetGasUrl);
-          effectiveUrl = sheetGasUrl;
           if (isMounted) {
             setGasUrl(sheetGasUrl);
-            // Refresh data pegawai dari URL baru jika URL berubah
-            fetchPegawai(sheetGasUrl);
           }
         } else {
           console.warn(`[Bootstrap] URL dari sheet (${sheetGasUrl}) gagal diuji, tetap menggunakan fallback URL`);
@@ -1030,6 +997,40 @@ export default function App() {
             );
           }
         }
+      }
+
+      const empTok = getEmployeeToken();
+      if (empTok && isMounted) {
+        setVerifyingEmployee(true);
+        try {
+          const vRes = await employeeVerifyApi(empTok);
+          if (!isMounted) return;
+          if (vRes?.status === 'success' && vRes?.valid === true) {
+            const restored: EmployeeSession = {
+              employeeToken: empTok,
+              nama: vRes.nama,
+              idPegawai: vRes.idPegawai || '',
+              outlet: vRes.outlet || '',
+              posisi: vRes.posisi || ''
+            };
+            setEmployeeSession(restored);
+            setEmployeeSessionState(restored);
+            setNama(restored.nama);
+            if (restored.outlet) setOutlet((prev) => prev || matchOutletOption(restored.outlet));
+            if (restored.posisi) setPosisi((prev) => prev || matchPosisiOption(restored.posisi));
+          } else {
+            await handleEmployeeLogout(false);
+          }
+        } catch (verifyErr) {
+          console.warn('[employeeVerify] Gagal memverifikasi token tersimpan:', verifyErr);
+          if (isMounted && !getSavedEmployeeSession()) {
+            await handleEmployeeLogout(false);
+          }
+        } finally {
+          if (isMounted) setVerifyingEmployee(false);
+        }
+      } else if (isMounted) {
+        setVerifyingEmployee(false);
       }
     };
 
@@ -1044,23 +1045,20 @@ export default function App() {
   const fetchRiwayat = async (pegawaiName: string, bulan: string = riwayatBulan) => {
     setLoadingRiwayat(true);
     setErrorRiwayat("");
-    if (!GAS_URL) {
-      setTimeout(() => {
-        setRiwayat([
-          { tanggal: getTodayString(), jamDatang: "08:00", jamPulang: "-", totalJam: "-", statusMasuk: "TEPAT WAKTU", statusPulang: "-", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-          { tanggal: "01/06/2026", jamDatang: "08:15", jamPulang: "19:45", totalJam: "11j 30m", statusMasuk: "TELAT", statusPulang: "NORMAL", outlet: "YZ_ MDP PASIR JAHA BALARAJA", posisi: "Admin" },
-        ]);
-        setLoadingRiwayat(false);
-      }, 800);
+    if (!GAS_URL || !getEmployeeToken()) {
+      setRiwayat([]);
+      setLoadingRiwayat(false);
       return;
     }
 
-
     try {
       console.log(`[fetchRiwayat] Mendapatkan riwayat untuk ${pegawaiName} bulan ${bulan}...`);
-      const res = await fetchWithRetry(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`);
-      const data = await parseApiResponse(res, 'getRiwayatBulan');
-      
+      const data = await fetchRiwayatBulanApi(pegawaiName, bulan, false);
+      if (data?.authRequired) {
+        await handleEmployeeLogout(false);
+        toast.error(data.message || 'Sesi pegawai berakhir. Silakan login ulang.');
+        return;
+      }
       if (data.status === 'success') {
         console.log(`[fetchRiwayat] Sukses mendapatkan ${data.data?.length} baris riwayat.`);
         const formattedData = (data.data || []).map((r: any) => ({
@@ -1551,8 +1549,12 @@ export default function App() {
 
 
     try {
-      const res = await fetchWithTimeout(`${GAS_URL}?action=getRiwayatBulan&nama=${encodeURIComponent(pegawaiName)}&bulan=${bulan}`, { cache: 'no-store' }, 20000);
-      const data = await parseApiResponse(res, 'getRiwayatBulan');
+      const data = await fetchRiwayatBulanApi(pegawaiName, bulan, true);
+      if (data?.authRequired) {
+        handleRequireOwnerReauth();
+        toast.error(data.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
       if (data.status === 'success') {
         const formattedData = (data.data || []).map((r: any) => ({
           ...r,
@@ -1575,33 +1577,38 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    if (activeTab === 'absen' && nama) {
+    if (activeTab === 'absen' && employeeSession && nama) {
       fetchRiwayat(nama, riwayatBulan);
       if (GAS_URL) {
         setLoadingAssignment(true);
-        fetchPegawaiDetailApi(nama, undefined, getBusinessDateJakarta(new Date(), 'YYYY-MM-DD'))
+        fetchPegawaiDetailApi(nama, employeeSession.idPegawai || undefined, getBusinessDateJakarta(new Date(), 'YYYY-MM-DD'), false)
           .then((res) => {
             if (!active) return;
+            if (res?.authRequired) {
+              handleEmployeeLogout(false);
+              return;
+            }
             if (res?.status === 'success' && res.effectiveAssignment) {
               setEffectiveAssignment(res.effectiveAssignment as EffectiveWorkAssignment);
             } else {
               setEffectiveAssignment(null);
             }
           })
-          .catch(() => {
+          .catch((err) => {
+            console.warn('[fetchPegawaiDetail] Gagal memuat detail penugasan:', err);
             if (active) setEffectiveAssignment(null);
           })
           .finally(() => {
             if (active) setLoadingAssignment(false);
           });
       }
-    } else if (!nama) {
+    } else if (!nama || !employeeSession) {
       setEffectiveAssignment(null);
     }
     return () => {
       active = false;
     };
-  }, [nama, activeTab, riwayatBulan]);
+  }, [nama, employeeSession, activeTab, riwayatBulan]);
 
   // Pre-fill outlet & posisi saat effectiveAssignment dimuat untuk pegawai yang dipilih (non-PULANG)
   useEffect(() => {
@@ -1734,8 +1741,10 @@ export default function App() {
 
 
   const kirimAbsen = () => {
-    
-    if (!nama) return toast.error("Pilih Nama Pegawai terlebih dahulu!");
+    if (!employeeSession || !getEmployeeToken()) {
+      return toast.error("Silakan login pegawai dengan PIN terlebih dahulu!");
+    }
+    if (!nama) return toast.error("Identitas pegawai tidak tersedia!");
     if (keterangan !== "PULANG" && !posisi) return toast.error("Pilih Posisi terlebih dahulu!");
     
     if (keterangan === "PULANG") {
@@ -1816,6 +1825,7 @@ export default function App() {
           action: "processForm",
           data: {
             nama: nama,
+            idPegawai: employeeSession?.idPegawai || "",
             posisi: targetPosisi,
             status: keterangan,
             jenisIzin: keterangan === "IZIN" ? jenisIzin : "",
@@ -1834,32 +1844,23 @@ export default function App() {
 
 
         if (!GAS_URL) {
-          // Simulate submit in AI Studio
-          setTimeout(() => {
-            setLoadingSubmit(false);
-            const mockGps = (Number(userLat) !== 0 && Number(userLng) !== 0) ? `https://maps.google.com/?q=${userLat},${userLng}` : "-";
-            toast.success(`✅ Berhasil Absen (Mode Preview). Lokasi: ${mockGps}`);
-            setImageBase64("");
-            setBuktiFeishuBase64("");
-            setIsFeishuOpen(false);
-            fetchRiwayat(nama);
-            setTimeout(() => {
-              document.getElementById('riwayat-absen')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }, 300);
-          }, 1500);
+          setLoadingSubmit(false);
+          setSubmitStatus("");
+          toast.error("URL Google Apps Script belum terkonfigurasi.");
           return;
         }
 
 
         try {
           console.log(`[kirimAbsen] Kirim payload (POST) ke: ${GAS_URL}`);
-          console.log(`[kirimAbsen] Data yg dikirim:`, payload);
-          const res = await fetchWithTimeout(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify(payload)
-          }, 35000); // Timeout 35 detik untuk submit foto + lokasi
-          const result = await parseApiResponse(res, 'submitAbsen');
+          const result = await submitAttendanceFormApi(payload.data);
           
+          if (result?.authRequired) {
+            await handleEmployeeLogout(false);
+            toast.error(result.message || "Sesi pegawai berakhir. Silakan login kembali.");
+            return;
+          }
+
           if (result.status === 'success') {
             console.log(`[kirimAbsen] Berhasil mencatat absen:`, result);
             toast.success(result.message);
@@ -2139,12 +2140,35 @@ export default function App() {
 
 
       {activeTab === 'absen' && (
+        verifyingEmployee ? (
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-sm border border-neutral-200 p-8 text-center space-y-3">
+            <div className="w-8 h-8 rounded-full border-4 border-neutral-200 border-t-[#cc0000] animate-spin mx-auto" />
+            <p className="text-sm font-medium text-neutral-600">Memverifikasi sesi pegawai...</p>
+          </div>
+        ) : !employeeSession ? (
+          <EmployeeLogin
+            gasUrlConfigured={!!GAS_URL}
+            onLoginSuccess={handleEmployeeLoginSuccess}
+          />
+        ) : (
         <>
           <div className="w-full max-w-md bg-white rounded-xl shadow-lg border border-neutral-200 overflow-hidden">
             
             {/* Header */}
-            <div className="bg-[#cc0000] p-4 text-center">
-              <h1 className="text-xl font-bold text-white tracking-wide">ABSENSI J&T</h1>
+            <div className="bg-[#cc0000] p-4 flex items-center justify-between gap-3">
+              <div className="text-left">
+                <h1 className="text-lg font-bold text-white tracking-wide">ABSENSI J&amp;T</h1>
+                <p className="text-[11px] text-red-100">Sesi Pegawai Terautentikasi</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleEmployeeLogout(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-bold transition cursor-pointer shrink-0"
+                title="Keluar dari sesi pegawai"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Keluar</span>
+              </button>
             </div>
 
 
@@ -2153,26 +2177,25 @@ export default function App() {
 
 
           <div className="space-y-4">
-            {/* Nama */}
+            {/* Identitas Pegawai Terkunci dari Sesi */}
             <div>
-              <label className="block text-sm font-semibold text-neutral-700 mb-1">Nama Pegawai</label>
-              <select 
-                value={nama} 
-                onChange={e => setNama(e.target.value)}
-                disabled={loadingNames}
-                className="w-full p-2.5 bg-neutral-50 border border-neutral-300 rounded-md focus:ring-2 focus:ring-[#cc0000] focus:border-red-500 outline-none transition"
-              >
-                <option value="" disabled>{loadingNames ? "Memuat nama..." : "Pilih Nama Pegawai"}</option>
-                {daftarPegawai.map((n, i) => <option key={i} value={n}>{n}</option>)}
-              </select>
-              {errorNames && (
-                <div className="mt-2 p-2 bg-red-50 border border-red-200 text-sm text-red-700 rounded flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-2">
-                  <span className="leading-tight">{errorNames}</span>
-                  <button type="button" onClick={() => fetchPegawai()} className="shrink-0 px-3 py-1 bg-white border border-red-300 font-bold rounded hover:bg-red-50 transition shadow-sm">
-                    Coba Lagi
-                  </button>
+              <label className="block text-sm font-semibold text-neutral-700 mb-1">Pegawai</label>
+              <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-lg flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-red-50 border border-red-100 text-[#cc0000] flex items-center justify-center shrink-0">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm text-neutral-900 truncate">{employeeSession.nama}</p>
+                    <p className="text-[11px] font-mono text-neutral-500">
+                      ID: {employeeSession.idPegawai || '-'}
+                    </p>
+                  </div>
                 </div>
-              )}
+                <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold shrink-0">
+                  TERVERIFIKASI
+                </span>
+              </div>
               {nama && effectiveAssignment && !loadingAssignment && (
                 <div className={`mt-2 p-2.5 rounded-md border text-xs ${
                   effectiveAssignment.ambiguous
@@ -2340,7 +2363,7 @@ export default function App() {
                       <span>Data outlet belum tersedia dari spreadsheet.</span>
                       <button 
                         type="button" 
-                        onClick={fetchSettings} 
+                        onClick={() => fetchSettings()} 
                         className="font-bold underline hover:text-amber-900 cursor-pointer"
                       >
                         Coba Lagi
@@ -2485,7 +2508,7 @@ export default function App() {
 
 
       {/* Riwayat Pribadi */}
-      {nama && activeTab === 'absen' && (
+      {nama && employeeSession && activeTab === 'absen' && (
         <div id="riwayat-absen" className="w-full max-w-md mt-6 bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
           <div className="bg-neutral-50 px-4 py-3 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="font-bold text-neutral-700 flex items-center gap-2 text-sm">
@@ -2623,6 +2646,7 @@ export default function App() {
         </div>
       )}
       </>
+        )
       )}
 
 
@@ -2732,6 +2756,13 @@ export default function App() {
                   >
                     <FileEdit className="w-3.5 h-3.5" />
                     Koreksi Absensi
+                  </button>
+                  <button 
+                    onClick={() => setOwnerView('keamanan')}
+                    className={`px-3.5 py-2 font-bold text-xs sm:text-sm rounded-t-lg transition-colors cursor-pointer inline-flex items-center gap-1.5 ${ownerView === 'keamanan' ? 'text-[#cc0000] border-b-2 border-[#cc0000]' : 'text-neutral-500 hover:text-neutral-800'}`}
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    Keamanan
                   </button>
                 </div>
               </div>
@@ -4066,6 +4097,24 @@ export default function App() {
                     todayYmd={getBusinessDateJakarta(new Date(), 'YYYY-MM-DD')}
                     onRequireAuth={handleRequireOwnerReauth}
                     onDataChanged={() => fetchRingkasanHarian(ringkasanTanggal)}
+                  />
+                </motion.div>
+              )}
+
+              {ownerView === 'keamanan' && (
+                <motion.div
+                  key="owner-keamanan"
+                  initial={{ opacity: 0, x: 15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -15 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <KeamananTab
+                    onRequireAuth={handleRequireOwnerReauth}
+                    onPasswordChanged={() => {
+                      handleRequireOwnerReauth();
+                      setOwnerView('harian');
+                    }}
                   />
                 </motion.div>
               )}

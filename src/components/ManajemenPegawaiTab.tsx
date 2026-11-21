@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Clock,
   History,
+  KeyRound,
   Pencil,
   Plus,
   RefreshCw,
@@ -17,7 +18,8 @@ import { toast } from 'sonner';
 import {
   fetchDataPenempatanApi,
   fetchRiwayatPenempatanApi,
-  savePenempatanApi
+  savePenempatanApi,
+  setEmployeePinApi
 } from '../api';
 import {
   ALL_DAYS,
@@ -114,6 +116,12 @@ export default function ManajemenPegawaiTab({
   // Deactivate modal
   const [deactivateTarget, setDeactivateTarget] = useState<PegawaiWithPenempatan | null>(null);
   const [deactivateDate, setDeactivateDate] = useState(todayYmd);
+
+  // Set/Reset PIN modal
+  const [pinTarget, setPinTarget] = useState<PegawaiWithPenempatan | null>(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pinConfirmInput, setPinConfirmInput] = useState('');
+  const [pinSaving, setPinSaving] = useState(false);
 
   const effectiveOutlets = apiOutlets.length > 0 ? apiOutlets : propOutlets;
   const effectivePositions = apiPositions.length > 0 ? apiPositions : propPositions;
@@ -325,6 +333,51 @@ export default function ManajemenPegawaiTab({
     }
   };
 
+  const openPinModal = (emp: PegawaiWithPenempatan) => {
+    setPinTarget(emp);
+    setPinInput('');
+    setPinConfirmInput('');
+  };
+
+  const handleSavePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pinTarget) return;
+    if (!/^\d{4,6}$/.test(pinInput)) {
+      toast.error('PIN harus terdiri dari 4 sampai 6 digit angka.');
+      return;
+    }
+    if (pinInput !== pinConfirmInput) {
+      toast.error('Konfirmasi PIN tidak cocok.');
+      return;
+    }
+    setPinSaving(true);
+    try {
+      const res = await setEmployeePinApi({
+        idPegawai: pinTarget.idPegawai,
+        nama: pinTarget.nama,
+        pin: pinInput
+      });
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
+      if (res?.status !== 'success') {
+        throw new Error(res?.message || 'Gagal mengatur PIN pegawai.');
+      }
+      toast.success(res.message || `PIN untuk ${pinTarget.nama} berhasil disimpan.`);
+      setPinTarget(null);
+      setPinInput('');
+      setPinConfirmInput('');
+      await loadData();
+      onDataChanged?.();
+    } catch (err: any) {
+      toast.error(err?.message || 'Gagal mengatur PIN pegawai.');
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -483,6 +536,15 @@ export default function ManajemenPegawaiTab({
                               Nama Duplikat
                             </span>
                           )}
+                          {emp.hasPin ? (
+                            <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-sans font-semibold text-[10px]">
+                              PIN Aktif
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 bg-neutral-100 text-neutral-600 border border-neutral-200 rounded font-sans font-semibold text-[10px]">
+                              Belum Ada PIN
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top">
@@ -528,6 +590,15 @@ export default function ManajemenPegawaiTab({
                           >
                             {p ? <Pencil className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
                             <span>{p ? 'Ubah' : 'Atur'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openPinModal(emp)}
+                            className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-semibold rounded-md transition inline-flex items-center gap-1 cursor-pointer"
+                            title={emp.hasPin ? 'Reset PIN Absensi' : 'Atur PIN Absensi'}
+                          >
+                            <KeyRound className="w-3 h-3" />
+                            <span>{emp.hasPin ? 'Reset PIN' : 'Atur PIN'}</span>
                           </button>
                           <button
                             type="button"
@@ -597,13 +668,21 @@ export default function ManajemenPegawaiTab({
                       </div>
                     </div>
                   )}
-                  <div className="flex items-center gap-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <button
                       type="button"
                       onClick={() => openEditModal(emp)}
                       className="flex-1 py-2 bg-[#cc0000] text-white text-xs font-bold rounded-md cursor-pointer"
                     >
                       {p ? 'Ubah Penempatan' : 'Atur Penempatan'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openPinModal(emp)}
+                      className="px-3 py-2 bg-neutral-100 text-neutral-800 text-xs font-semibold rounded-md cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <KeyRound className="w-3 h-3" />
+                      <span>{emp.hasPin ? 'Reset PIN' : 'Atur PIN'}</span>
                     </button>
                     <button
                       type="button"
@@ -889,6 +968,80 @@ export default function ManajemenPegawaiTab({
                 {submitting ? 'Memproses...' : 'Ya, Nonaktifkan'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Modal Atur / Reset PIN Pegawai */}
+      {pinTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !pinSaving && setPinTarget(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-4 text-xs" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="font-bold text-base text-neutral-900">
+                  {pinTarget.hasPin ? 'Reset PIN Absensi Pegawai' : 'Atur PIN Absensi Pegawai'}
+                </h3>
+                <p className="text-neutral-500 mt-0.5">
+                  {pinTarget.nama} {pinTarget.idPegawai ? `(${pinTarget.idPegawai})` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !pinSaving && setPinTarget(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-700 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSavePin} className="space-y-3">
+              <div>
+                <label className="block font-semibold text-neutral-700 mb-1">PIN Baru (4–6 Digit Angka)</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={pinInput}
+                  onChange={(e) => setPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Contoh: 123456"
+                  className="w-full p-2.5 border border-neutral-300 rounded-md font-mono tracking-widest focus:ring-2 focus:ring-[#cc0000] outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-neutral-700 mb-1">Konfirmasi PIN Baru</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={pinConfirmInput}
+                  onChange={(e) => setPinConfirmInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Ketik ulang PIN"
+                  className="w-full p-2.5 border border-neutral-300 rounded-md font-mono tracking-widest focus:ring-2 focus:ring-[#cc0000] outline-none"
+                  required
+                />
+              </div>
+              <p className="text-[11px] text-neutral-500 leading-relaxed">
+                PIN akan disimpan dalam bentuk hash terenkripsi di Google Sheets dan otomatis membuka kunci akun jika sebelumnya terkunci.
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={pinSaving}
+                  onClick={() => setPinTarget(null)}
+                  className="px-3.5 py-2 bg-neutral-100 text-neutral-700 font-semibold rounded-md cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={pinSaving}
+                  className="px-4 py-2 bg-[#cc0000] hover:bg-[#a30000] text-white font-bold rounded-md cursor-pointer disabled:opacity-50"
+                >
+                  {pinSaving ? 'Menyimpan...' : 'Simpan PIN'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

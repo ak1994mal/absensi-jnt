@@ -9,9 +9,9 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.9.3` (Phase B Attendance Logic & Data Integrity Audit — Siap Deploy GAS & Vercel) |
+| **Versi Saat Ini** | `v2.10.0` (Layered Security & Authentication — Siap Deploy GAS & Vercel) |
 | **Terakhir Diperbarui** | 21 November 2026 |
-| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, Lint, `node scripts/verify-kode-gs.mjs` 48/48) |
+| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, Lint, `node scripts/verify-kode-gs.mjs` 63/63) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
 | **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `DataPegawai`, `DataOutlet`, `DataPosisi`, `DataPenempatan`, `JadwalHarian`, `DataKetidakhadiran`, `SnapshotAbsensi`, `AbsenIzin`, `Settings`) + Google Drive API |
 | **Environment Target**| Web App (Mobile & Desktop Browser Responsive) |
@@ -134,6 +134,20 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.10.0] — 21 November 2026
+- **SECURITY — Layered Security & Employee PIN Authentication (`Kode.gs`, `src/kodeGsSource.ts`, `src/api.ts`, `src/App.tsx`, `EmployeeLogin.tsx`, `KeamananTab.tsx`, `ManajemenPegawaiTab.tsx`):**
+  - **Autentikasi Pegawai via PIN (`employeeLogin`, `employeeVerify`, `employeeLogout`, `setEmployeePin`):**
+    - Kolom PIN di `DataPegawai` (`K: PinAbsen` salted SHA-256 hash, `L: PinCreatedAt`, `M: PinLastUsed`) dikelola otomatis via `ensurePinColumns()`.
+    - Layar absensi pegawai kini menampilkan form login manual Nama / ID Pegawai + PIN 4–6 digit (`EmployeeLogin.tsx`) tanpa menampilkan dropdown daftar seluruh pegawai (`getPegawai` diproteksi `ownerToken`).
+    - Penolakan otomatis 15 menit setelah 3 kali salah PIN (`EMP_LOCK_*`), proteksi anti-spoofing identitas di `processForm` (`data.nama` & `data.idPegawai` wajib cocok dengan `employeeToken`), dan isolasi data pribadi (`getRiwayat`, `getRiwayatBulan`, `getPegawaiDetail`, `getRingkasanHarian`).
+    - Owner dapat mengatur dan mereset PIN tiap pegawai langsung dari tab **Manajemen Pegawai**.
+  - **Rotasi Password Owner & Manajemen Sesi (`KeamananTab.tsx`):**
+    - Endpoint `changeOwnerPassword`, `getOwnerSessions`, dan `revokeOwnerSession` dengan validasi kompleksitas password (>=8 karakter, huruf + angka), riwayat 5 password terakhir (`OWNER_PASSWORD_HISTORY`), penyimpanan hash SHA-256 di `Settings!B10` & `ScriptProperties`, pencabutan otomatis seluruh sesi lama saat ganti password, serta kontrol revoke per sesi / semua sesi lain.
+  - **Rate Limiting & Audit Log Server (`AuditLog`):**
+    - Rate limiter berbasis Cache + Properties (`employeeLogin` 5/15m, `ownerLogin` 3/15m, `processForm` 10/1h, `doGet` 60/1m) menggunakan composite key `account + deviceId`.
+    - Pencatatan aktivitas keamanan ke sheet `AuditLog` (`getAuditLogs` + filter & Export CSV) dengan penyensoran otomatis PIN, password, token, dan base64 foto.
+  - **Verifikasi Otomatis (`scripts/verify-kode-gs.mjs`):** 63/63 skenario lolos (16 regresi lama + 18 Phase A + 14 Phase B + 15 Layered Security `LS-1`..`LS-15`) dan sinkronisasi 100% byte-per-byte `Kode.gs` === `src/kodeGsSource.ts`.
 
 ### [v2.9.3] — 21 November 2026
 - **AUDIT & HARDENING — Phase B: Attendance Logic & Data Integrity (`Kode.gs`, `src/kodeGsSource.ts`, `src/types/attendance.ts`, `src/api.ts`, `src/App.tsx`, `KehadiranPegawaiTab.tsx`, `JadwalRotasiTab.tsx`):**
