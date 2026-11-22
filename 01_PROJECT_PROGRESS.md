@@ -9,9 +9,9 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 | Atribut | Keterangan |
 |---|---|
 | **Nama Aplikasi** | Aplikasi Absensi J&T (Internal Attendance System) |
-| **Versi Saat Ini** | `v2.10.0` (Layered Security & Authentication — Siap Deploy GAS & Vercel) |
-| **Terakhir Diperbarui** | 21 November 2026 |
-| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, Lint, `node scripts/verify-kode-gs.mjs` 63/63) |
+| **Versi Saat Ini** | `v2.11.0` (3-Layer Hybrid Biometric Employee Authentication — Siap Deploy GAS & Vercel) |
+| **Terakhir Diperbarui** | 22 November 2026 |
+| **Status Build** | ✅ Passing (`tsc --noEmit`, Vite Production Build, Lint, `node scripts/verify-kode-gs.mjs` 80/80) |
 | **Frontend Stack** | React 19, TypeScript, Tailwind CSS v4, Lucide React, Motion, Leaflet, Sonner |
 | **Backend & Storage**| Google Apps Script (GAS) Web App + Google Sheets Database (`Data_Absensi`, `DataPegawai`, `DataOutlet`, `DataPosisi`, `DataPenempatan`, `JadwalHarian`, `DataKetidakhadiran`, `SnapshotAbsensi`, `AbsenIzin`, `Settings`) + Google Drive API |
 | **Environment Target**| Web App (Mobile & Desktop Browser Responsive) |
@@ -134,6 +134,19 @@ Dokumen ini mencatat status pengembangan, daftar fitur, rencana roadmap, serta l
 ---
 
 ## 📝 5. Log Pembaruan (Changelog)
+
+### [v2.11.0] — 22 November 2026
+- **SECURITY & UX — 3-Layer Hybrid Biometric Employee Authentication (`Kode.gs`, `src/kodeGsSource.ts`, `src/api.ts`, `src/App.tsx`, `EmployeeLogin.tsx`, `BiometricLogin.tsx`, `FaceLogin.tsx`, `DaftarBiometric.tsx`, `DaftarWajah.tsx`, `ManajemenPegawaiTab.tsx`, `src/utils/biometricHelpers.ts`):**
+  - **Lapis 1 — WebAuthn / Passkey (Fingerprint / Face ID Device, 1 Tap):**
+    - Kolom `N–S` pada `DataPegawai` (`WebAuthnCredentialId`, `WebAuthnPublicKey`, `WebAuthnCounter`, `WebAuthnRegisteredAt`, `WebAuthnLastUsedAt`, `WebAuthnDeviceName`) dikelola otomatis via `ensureWebAuthnColumns()` dengan dukungan hingga 5 perangkat aktif per pegawai.
+    - Verifikasi kriptografis **pure-JS NIST P-256 ECDSA + SHA-256 + CBOR decoder** di `Kode.gs`, single-use challenge `CacheService` (5 menit), validasi origin terpercaya, dan proteksi anti-replay monotonic `signCount`.
+  - **Lapis 2 — Face Recognition dengan Liveness Detection (`@vladmandic/face-api` + `/public/models`):**
+    - Model AI wajah di-hosting lokal di `public/models/` dengan *lazy loading* saat pengguna membuka kamera.
+    - Pengambilan profil wajah 3 sudut (`DaftarWajah.tsx`), pengecekan *liveness* (kedip/gerakan kepala) saat login (`FaceLogin.tsx`), dan ambang kemiripan `face_recognition_threshold` yang dapat dikonfigurasi Owner pada `Settings!A11:B11` (default `0.60`, rentang `0.30–0.85`).
+  - **Lapis 3 — PIN Fallback Otomatis & Manajemen Owner:**
+    - `EmployeeLogin.tsx` mendeteksi kapabilitas browser/kamera, memprioritaskan Biometric jika tersedia, dan melakukan fallback otomatis ke PIN jika sensor/kamera gagal atau belum terdaftar.
+    - Pegawai dapat mengelola perangkat biometric dan profil wajah dari prompt pasca-login PIN serta tombol **Biometric** di header; Owner dapat memantau dan mencabut perangkat/wajah pegawai di tab **Manajemen Pegawai**.
+  - **Verifikasi Otomatis (`scripts/verify-kode-gs.mjs`):** 80/80 skenario lolos (63 uji sebelumnya + 17 uji Hybrid Biometric `HB-1`..`HB-17`) dan sinkronisasi 100% byte-per-byte `Kode.gs` === `src/kodeGsSource.ts`.
 
 ### [v2.10.0] — 21 November 2026
 - **SECURITY — Layered Security & Employee PIN Authentication (`Kode.gs`, `src/kodeGsSource.ts`, `src/api.ts`, `src/App.tsx`, `EmployeeLogin.tsx`, `KeamananTab.tsx`, `ManajemenPegawaiTab.tsx`):**

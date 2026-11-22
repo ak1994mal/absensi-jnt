@@ -12,6 +12,15 @@ export const ALL_DAYS: { code: DayCode; label: string; short: string }[] = [
 
 export const DEFAULT_WORK_DAYS: DayCode[] = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
+export interface WebAuthnDeviceSummary {
+  credentialId: string;
+  credentialIdMask: string;
+  deviceName: string;
+  registeredAt?: string;
+  lastUsedAt?: string;
+  counter?: number;
+}
+
 export interface PegawaiSafe {
   idPegawai: string;
   nama: string;
@@ -25,6 +34,11 @@ export interface PegawaiSafe {
   hasPin?: boolean;
   pinCreatedAt?: string;
   pinLastUsed?: string;
+  hasWebAuthn?: boolean;
+  webAuthnDeviceCount?: number;
+  webAuthnDevices?: WebAuthnDeviceSummary[];
+  hasFaceDescriptor?: boolean;
+  faceRegisteredAt?: string;
 }
 
 export interface EmployeeSession {
@@ -34,6 +48,10 @@ export interface EmployeeSession {
   outlet: string;
   posisi: string;
   expiresAt?: number;
+  authMethod?: 'pin' | 'webauthn' | 'face';
+  hasWebAuthn?: boolean;
+  webAuthnDeviceCount?: number;
+  hasFaceDescriptor?: boolean;
 }
 
 export interface OwnerSessionItem {

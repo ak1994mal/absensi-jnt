@@ -4,20 +4,27 @@ import {
   Building2,
   CheckCircle2,
   Clock,
+  Fingerprint,
   History,
   KeyRound,
+  Loader2,
   Pencil,
   Plus,
   RefreshCw,
+  ScanFace,
   Search,
+  Trash2,
   UserCheck,
   UserX,
   X
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
+  deleteFaceDescriptorApi,
   fetchDataPenempatanApi,
   fetchRiwayatPenempatanApi,
+  getWebAuthnDevicesApi,
+  revokeWebAuthnDeviceApi,
   savePenempatanApi,
   setEmployeePinApi
 } from '../api';
@@ -26,7 +33,8 @@ import {
   DayCode,
   DEFAULT_WORK_DAYS,
   PegawaiWithPenempatan,
-  PenempatanRecord
+  PenempatanRecord,
+  WebAuthnDeviceSummary
 } from '../types/attendance';
 
 interface PositionOption {
@@ -122,6 +130,14 @@ export default function ManajemenPegawaiTab({
   const [pinInput, setPinInput] = useState('');
   const [pinConfirmInput, setPinConfirmInput] = useState('');
   const [pinSaving, setPinSaving] = useState(false);
+
+  // Manage Biometric modal (Owner revoke)
+  const [bioTarget, setBioTarget] = useState<PegawaiWithPenempatan | null>(null);
+  const [bioDevices, setBioDevices] = useState<WebAuthnDeviceSummary[]>([]);
+  const [bioHasFace, setBioHasFace] = useState(false);
+  const [bioFaceAt, setBioFaceAt] = useState('');
+  const [bioLoading, setBioLoading] = useState(false);
+  const [bioBusyKey, setBioBusyKey] = useState('');
 
   const effectiveOutlets = apiOutlets.length > 0 ? apiOutlets : propOutlets;
   const effectivePositions = apiPositions.length > 0 ? apiPositions : propPositions;
@@ -378,6 +394,93 @@ export default function ManajemenPegawaiTab({
     }
   };
 
+  const openBiometricModal = async (emp: PegawaiWithPenempatan) => {
+    setBioTarget(emp);
+    setBioDevices(emp.webAuthnDevices || []);
+    setBioHasFace(!!emp.hasFaceDescriptor);
+    setBioFaceAt(emp.faceRegisteredAt || '');
+    setBioLoading(true);
+    try {
+      const res = await getWebAuthnDevicesApi(emp.idPegawai || emp.nama, true);
+      if (res?.authRequired) {
+        onRequireAuth();
+        setBioTarget(null);
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
+      if (res?.status === 'success') {
+        setBioDevices(Array.isArray(res.devices) ? res.devices : []);
+        setBioHasFace(!!res.hasFaceDescriptor);
+        setBioFaceAt(res.faceRegisteredAt || '');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Gagal memuat status biometric pegawai.');
+    } finally {
+      setBioLoading(false);
+    }
+  };
+
+  const handleRevokeEmployeeWebAuthn = async (credentialId?: string, revokeAll = false) => {
+    if (!bioTarget) return;
+    const key = revokeAll ? 'ALL' : String(credentialId || '');
+    setBioBusyKey(key);
+    try {
+      const res = await revokeWebAuthnDeviceApi(
+        {
+          idPegawai: bioTarget.idPegawai,
+          nama: bioTarget.nama,
+          credentialId,
+          revokeAll
+        },
+        true
+      );
+      if (res?.authRequired) {
+        onRequireAuth();
+        setBioTarget(null);
+        return;
+      }
+      if (res?.status !== 'success') {
+        throw new Error(res?.message || 'Gagal menghapus perangkat biometric.');
+      }
+      setBioDevices(Array.isArray(res.devices) ? res.devices : []);
+      toast.success(res.message || 'Perangkat biometric dihapus.');
+      await loadData();
+      onDataChanged?.();
+    } catch (err: any) {
+      toast.error(err?.message || 'Gagal menghapus perangkat biometric.');
+    } finally {
+      setBioBusyKey('');
+    }
+  };
+
+  const handleDeleteEmployeeFace = async () => {
+    if (!bioTarget) return;
+    setBioBusyKey('FACE');
+    try {
+      const res = await deleteFaceDescriptorApi(
+        { idPegawai: bioTarget.idPegawai, nama: bioTarget.nama },
+        true
+      );
+      if (res?.authRequired) {
+        onRequireAuth();
+        setBioTarget(null);
+        return;
+      }
+      if (res?.status !== 'success') {
+        throw new Error(res?.message || 'Gagal menghapus profil wajah.');
+      }
+      setBioHasFace(false);
+      setBioFaceAt('');
+      toast.success(res.message || 'Profil wajah dihapus.');
+      await loadData();
+      onDataChanged?.();
+    } catch (err: any) {
+      toast.error(err?.message || 'Gagal menghapus profil wajah.');
+    } finally {
+      setBioBusyKey('');
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -546,6 +649,14 @@ export default function ManajemenPegawaiTab({
                             </span>
                           )}
                         </div>
+                        <div className="text-[10px] text-neutral-500 mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                          <span className={emp.hasWebAuthn ? 'text-emerald-700 font-semibold' : ''}>
+                            Fingerprint: {emp.webAuthnDeviceCount ? `${emp.webAuthnDeviceCount} device` : 'Belum'}
+                          </span>
+                          <span className={emp.hasFaceDescriptor ? 'text-emerald-700 font-semibold' : ''}>
+                            Wajah: {emp.hasFaceDescriptor ? 'Terdaftar' : 'Belum'}
+                          </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         {p ? (
@@ -599,6 +710,15 @@ export default function ManajemenPegawaiTab({
                           >
                             <KeyRound className="w-3 h-3" />
                             <span>{emp.hasPin ? 'Reset PIN' : 'Atur PIN'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openBiometricModal(emp)}
+                            className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-semibold rounded-md transition inline-flex items-center gap-1 cursor-pointer"
+                            title="Kelola / Cabut Biometric & Wajah"
+                          >
+                            <Fingerprint className="w-3 h-3" />
+                            <span>Biometric</span>
                           </button>
                           <button
                             type="button"
@@ -668,6 +788,11 @@ export default function ManajemenPegawaiTab({
                       </div>
                     </div>
                   )}
+                  <div className="text-[11px] text-neutral-500 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                    <span>PIN: <strong>{emp.hasPin ? 'Aktif' : 'Belum'}</strong></span>
+                    <span>Fingerprint: <strong>{emp.webAuthnDeviceCount ? `${emp.webAuthnDeviceCount} device` : 'Belum'}</strong></span>
+                    <span>Wajah: <strong>{emp.hasFaceDescriptor ? 'Aktif' : 'Belum'}</strong></span>
+                  </div>
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <button
                       type="button"
@@ -683,6 +808,14 @@ export default function ManajemenPegawaiTab({
                     >
                       <KeyRound className="w-3 h-3" />
                       <span>{emp.hasPin ? 'Reset PIN' : 'Atur PIN'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openBiometricModal(emp)}
+                      className="px-3 py-2 bg-neutral-100 text-neutral-800 text-xs font-semibold rounded-md cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Fingerprint className="w-3 h-3" />
+                      <span>Biometric</span>
                     </button>
                     <button
                       type="button"
@@ -1042,6 +1175,124 @@ export default function ManajemenPegawaiTab({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Kelola / Cabut Biometric Pegawai */}
+      {bioTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !bioBusyKey && setBioTarget(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between bg-neutral-50">
+              <div>
+                <h3 className="font-bold text-base text-neutral-900">Biometric Pegawai</h3>
+                <p className="text-neutral-500 mt-0.5">
+                  {bioTarget.nama} {bioTarget.idPegawai ? `(${bioTarget.idPegawai})` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !bioBusyKey && setBioTarget(null)}
+                className="p-1.5 text-neutral-400 hover:text-neutral-700 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+              {bioLoading ? (
+                <div className="py-6 flex items-center justify-center gap-2 text-neutral-500">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Memuat data biometric...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Perangkat WebAuthn */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-neutral-800 flex items-center gap-1.5">
+                        <Fingerprint className="w-4 h-4 text-[#cc0000]" />
+                        <span>Fingerprint / Face ID ({bioDevices.length} / 5)</span>
+                      </span>
+                      {bioDevices.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRevokeEmployeeWebAuthn(undefined, true)}
+                          disabled={!!bioBusyKey}
+                          className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 font-semibold rounded-md cursor-pointer disabled:opacity-50"
+                        >
+                          {bioBusyKey === 'ALL' ? 'Menghapus...' : 'Cabut Semua'}
+                        </button>
+                      )}
+                    </div>
+                    {bioDevices.length === 0 ? (
+                      <div className="p-3 rounded-lg border border-dashed border-neutral-200 text-neutral-500">
+                        Belum ada perangkat Fingerprint / Face ID terdaftar.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-neutral-200 border border-neutral-200 rounded-lg bg-white">
+                        {bioDevices.map((dev) => (
+                          <div key={dev.credentialId} className="p-3 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-bold text-neutral-900 truncate">{dev.deviceName}</p>
+                              <p className="text-[11px] font-mono text-neutral-500">
+                                ID: {dev.credentialIdMask} · Dipakai: {dev.lastUsedAt || '-'}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeEmployeeWebAuthn(dev.credentialId, false)}
+                              disabled={!!bioBusyKey}
+                              className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 font-semibold rounded-md inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{bioBusyKey === dev.credentialId ? '...' : 'Hapus'}</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Profil Wajah */}
+                  <div className="space-y-2 pt-2 border-t border-neutral-100">
+                    <span className="font-bold text-neutral-800 flex items-center gap-1.5">
+                      <ScanFace className="w-4 h-4 text-[#cc0000]" />
+                      <span>Profil Wajah (Face Recognition)</span>
+                    </span>
+                    {bioHasFace ? (
+                      <div className="p-3 rounded-lg border border-emerald-200 bg-emerald-50 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="font-bold text-emerald-900">Profil Wajah Aktif</p>
+                          <p className="text-[11px] font-mono text-emerald-700">
+                            Terdaftar: {bioFaceAt || '-'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleDeleteEmployeeFace}
+                          disabled={!!bioBusyKey}
+                          className="px-3 py-1.5 bg-white border border-red-200 hover:bg-red-50 text-red-700 font-semibold rounded-md inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{bioBusyKey === 'FACE' ? '...' : 'Hapus Wajah'}</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-lg border border-dashed border-neutral-200 text-neutral-500">
+                        Pegawai belum mendaftarkan profil wajah.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

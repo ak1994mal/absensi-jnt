@@ -128,6 +128,8 @@ export const DEFAULT_OFFLINE_SETTINGS = {
   requireLocation: true,
   enableWorkHours: true,
   toleransiTelat: 60,
+  faceRecognitionThreshold: 0.6,
+  face_recognition_threshold: 0.6,
   positions: DEFAULT_OFFLINE_POSITIONS,
   outlets: DEFAULT_OFFLINE_OUTLETS,
   favicon: "",
@@ -210,6 +212,10 @@ export function setEmployeeSession(session: {
   outlet?: string;
   posisi?: string;
   expiresAt?: number;
+  authMethod?: 'pin' | 'webauthn' | 'face';
+  hasWebAuthn?: boolean;
+  webAuthnDeviceCount?: number;
+  hasFaceDescriptor?: boolean;
 } | null): void {
   try {
     if (!session || !session.employeeToken) {
@@ -226,7 +232,11 @@ export function setEmployeeSession(session: {
         idPegawai: session.idPegawai || "",
         outlet: session.outlet || "",
         posisi: session.posisi || "",
-        expiresAt: session.expiresAt
+        expiresAt: session.expiresAt,
+        authMethod: session.authMethod,
+        hasWebAuthn: !!session.hasWebAuthn,
+        webAuthnDeviceCount: session.webAuthnDeviceCount || 0,
+        hasFaceDescriptor: !!session.hasFaceDescriptor
       })
     );
   } catch (e) {}
@@ -239,12 +249,57 @@ export function getSavedEmployeeSession(): {
   outlet: string;
   posisi: string;
   expiresAt?: number;
+  authMethod?: 'pin' | 'webauthn' | 'face';
+  hasWebAuthn?: boolean;
+  webAuthnDeviceCount?: number;
+  hasFaceDescriptor?: boolean;
 } | null {
   try {
     const raw = localStorage.getItem(EMPLOYEE_SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || !parsed.employeeToken) return null;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+const BIOMETRIC_HINT_KEY = "jnt_last_bio_hint";
+
+export interface BiometricDeviceHint {
+  identifier: string;
+  nama?: string;
+  idPegawai?: string;
+  hasWebAuthn?: boolean;
+  hasFace?: boolean;
+  updatedAt?: number;
+}
+
+export function saveLastBiometricHint(hint: BiometricDeviceHint): void {
+  try {
+    const cleanId = String(hint.identifier || "").trim();
+    if (!cleanId) return;
+    localStorage.setItem(
+      BIOMETRIC_HINT_KEY,
+      JSON.stringify({
+        identifier: cleanId,
+        nama: hint.nama || "",
+        idPegawai: hint.idPegawai || "",
+        hasWebAuthn: !!hint.hasWebAuthn,
+        hasFace: !!hint.hasFace,
+        updatedAt: Date.now()
+      })
+    );
+  } catch (e) {}
+}
+
+export function getLastBiometricHint(): BiometricDeviceHint | null {
+  try {
+    const raw = localStorage.getItem(BIOMETRIC_HINT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.identifier) return null;
     return parsed;
   } catch (e) {
     return null;
@@ -369,6 +424,95 @@ export async function submitAttendanceFormApi(data: any) {
 
 export async function fetchRiwayatBulanApi(nama: string, bulan: string, asOwner = false) {
   return gasPost('getRiwayatBulan', { nama, bulan }, asOwner, 20000, undefined, !asOwner);
+}
+
+// ==================== WEBAUTHN & FACE BIOMETRIC ENDPOINTS ====================
+
+export async function getWebAuthnRegisterChallengeApi(rpId: string) {
+  return gasPost('getWebAuthnRegisterChallenge', { rpId }, false, 20000, undefined, true);
+}
+
+export async function registerWebAuthnCredentialApi(payload: {
+  credentialId: string;
+  publicKey?: string;
+  counter?: number;
+  deviceName?: string;
+  clientDataJSON: string;
+  attestationObject?: string;
+  authenticatorData?: string;
+}) {
+  return gasPost('registerWebAuthnCredential', payload, false, 20000, undefined, true);
+}
+
+export async function getWebAuthnLoginChallengeApi(identifier: string, rpId: string) {
+  return gasPost(
+    'getWebAuthnLoginChallenge',
+    {
+      identifier: identifier.trim(),
+      nama: identifier.trim(),
+      rpId,
+      deviceId: getDeviceId(),
+      userAgent: getUserAgentHint()
+    },
+    false,
+    20000
+  );
+}
+
+export async function loginWebAuthnApi(payload: {
+  identifier: string;
+  credentialId: string;
+  authenticatorData: string;
+  clientDataJSON: string;
+  signature: string;
+  counter?: number;
+}) {
+  return gasPost(
+    'loginWebAuthn',
+    {
+      ...payload,
+      nama: payload.identifier.trim(),
+      deviceId: getDeviceId(),
+      userAgent: getUserAgentHint()
+    },
+    false,
+    20000
+  );
+}
+
+export async function getWebAuthnDevicesApi(targetIdentifier?: string, asOwner = false) {
+  const data = targetIdentifier ? { idPegawai: targetIdentifier, nama: targetIdentifier } : {};
+  return gasPost('getWebAuthnDevices', data, asOwner, 20000, undefined, !asOwner);
+}
+
+export async function revokeWebAuthnDeviceApi(
+  params: { credentialId?: string; revokeAll?: boolean; idPegawai?: string; nama?: string },
+  asOwner = false
+) {
+  return gasPost('revokeWebAuthnDevice', params, asOwner, 20000, undefined, !asOwner);
+}
+
+export async function registerFaceDescriptorApi(faceDescriptor: number[], overwrite = true) {
+  return gasPost('registerFaceDescriptor', { faceDescriptor, overwrite }, false, 25000, undefined, true);
+}
+
+export async function deleteFaceDescriptorApi(params: { idPegawai?: string; nama?: string } = {}, asOwner = false) {
+  return gasPost('deleteFaceDescriptor', params, asOwner, 20000, undefined, !asOwner);
+}
+
+export async function loginFaceRecognitionApi(identifier: string, faceDescriptor: number[]) {
+  return gasPost(
+    'loginFaceRecognition',
+    {
+      identifier: identifier.trim(),
+      nama: identifier.trim(),
+      faceDescriptor,
+      deviceId: getDeviceId(),
+      userAgent: getUserAgentHint()
+    },
+    false,
+    25000
+  );
 }
 
 // ==================== OWNER AUTH & SECURITY MANAGEMENT ENDPOINTS ====================

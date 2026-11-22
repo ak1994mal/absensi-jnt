@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe, FileEdit, Shield, UserCheck } from 'lucide-react';
+import { Camera, MapPin, Send, AlertCircle, LocateFixed, CheckCircle2, FileImage, ClipboardList, History, Users, Bell, X, LogOut, RefreshCw, BarChart3, CalendarDays, Clock, ExternalLink, Store, Briefcase, Plus, Pencil, Trash2, Check, Globe, FileEdit, Shield, UserCheck, Fingerprint, ScanFace } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import OutletMapManager from './components/OutletMapManager';
 import ManajemenPegawaiTab from './components/ManajemenPegawaiTab';
@@ -8,6 +8,8 @@ import KehadiranPegawaiTab from './components/KehadiranPegawaiTab';
 import KoreksiAbsensiTab from './components/KoreksiAbsensiTab';
 import EmployeeLogin from './components/EmployeeLogin';
 import KeamananTab from './components/KeamananTab';
+import DaftarBiometric from './components/DaftarBiometric';
+import DaftarWajah from './components/DaftarWajah';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -21,6 +23,7 @@ import {
   getEmployeeToken,
   setEmployeeSession,
   getSavedEmployeeSession,
+  saveLastBiometricHint,
   employeeVerifyApi,
   employeeLogoutApi,
   submitAttendanceFormApi,
@@ -542,6 +545,14 @@ export default function App() {
   const [toleransiTelatInput, setToleransiTelatInput] = useState<string>(() => {
     return String(settingsData?.toleransiTelat ?? settingsData?.toleransi_telat ?? 30);
   });
+  const [faceThresholdInput, setFaceThresholdInput] = useState<string>(() => {
+    const raw = settingsData?.faceRecognitionThreshold ?? settingsData?.face_recognition_threshold ?? 0.6;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num.toFixed(2) : '0.60';
+  });
+  const [biometricModalOpen, setBiometricModalOpen] = useState(false);
+  const [biometricModalTab, setBiometricModalTab] = useState<'device' | 'face'>('device');
+  const [dismissedBiometricPrompt, setDismissedBiometricPrompt] = useState(false);
 
   useEffect(() => {
     if (settingsData?.toleransiTelat !== undefined) {
@@ -550,6 +561,14 @@ export default function App() {
       setToleransiTelatInput(String(settingsData.toleransi_telat));
     }
   }, [settingsData?.toleransiTelat, settingsData?.toleransi_telat]);
+
+  useEffect(() => {
+    const raw = settingsData?.faceRecognitionThreshold ?? settingsData?.face_recognition_threshold;
+    if (raw !== undefined) {
+      const num = Number(raw);
+      if (Number.isFinite(num)) setFaceThresholdInput(num.toFixed(2));
+    }
+  }, [settingsData?.faceRecognitionThreshold, settingsData?.face_recognition_threshold]);
 
   const availablePositions: PositionConfig[] = (settingsData?.positions && Array.isArray(settingsData.positions) && settingsData.positions.length > 0)
     ? settingsData.positions.map((p: any) => {
@@ -899,6 +918,10 @@ export default function App() {
         const parsedTol = parseInt(rawTol, 10);
         d.toleransiTelat = isNaN(parsedTol) ? 30 : parsedTol;
         d.toleransi_telat = d.toleransiTelat;
+        const rawFace = d.faceRecognitionThreshold !== undefined ? d.faceRecognitionThreshold : d.face_recognition_threshold;
+        const parsedFace = parseFloat(rawFace);
+        d.faceRecognitionThreshold = Number.isFinite(parsedFace) ? Math.min(0.85, Math.max(0.3, Number(parsedFace.toFixed(2)))) : 0.6;
+        d.face_recognition_threshold = d.faceRecognitionThreshold;
         setSettingsData(d);
         try {
           localStorage.setItem("settingsData_offline", JSON.stringify(d));
@@ -927,6 +950,7 @@ export default function App() {
   const handleEmployeeLoginSuccess = (session: EmployeeSession) => {
     setEmployeeSession(session);
     setEmployeeSessionState(session);
+    setDismissedBiometricPrompt(false);
     setNama(session.nama);
     if (session.outlet) setOutlet(matchOutletOption(session.outlet));
     if (session.posisi) setPosisi(matchPosisiOption(session.posisi));
@@ -943,6 +967,8 @@ export default function App() {
     }
     setEmployeeSession(null);
     setEmployeeSessionState(null);
+    setBiometricModalOpen(false);
+    setDismissedBiometricPrompt(false);
     setNama("");
     setPosisi("");
     setOutlet("");
@@ -1011,8 +1037,21 @@ export default function App() {
               nama: vRes.nama,
               idPegawai: vRes.idPegawai || '',
               outlet: vRes.outlet || '',
-              posisi: vRes.posisi || ''
+              posisi: vRes.posisi || '',
+              authMethod: vRes.authMethod,
+              hasWebAuthn: !!vRes.hasWebAuthn,
+              webAuthnDeviceCount: vRes.webAuthnDeviceCount || 0,
+              hasFaceDescriptor: !!vRes.hasFaceDescriptor
             };
+            if (restored.hasWebAuthn || restored.hasFaceDescriptor) {
+              saveLastBiometricHint({
+                identifier: restored.idPegawai || restored.nama,
+                nama: restored.nama,
+                idPegawai: restored.idPegawai,
+                hasWebAuthn: restored.hasWebAuthn,
+                hasFace: restored.hasFaceDescriptor
+              });
+            }
             setEmployeeSession(restored);
             setEmployeeSessionState(restored);
             setNama(restored.nama);
@@ -1466,6 +1505,60 @@ export default function App() {
         toast.error(`Error menyimpan toleransi: ${e.message}`, { id: loadingToastId });
     } finally {
         setSavingSettings(false);
+    }
+  };
+
+  const handleSaveFaceThreshold = async () => {
+    const parsed = parseFloat(faceThresholdInput);
+    if (!Number.isFinite(parsed) || parsed < 0.3 || parsed > 0.85) {
+      toast.error("Batas kemiripan wajah harus antara 0.30 sampai 0.85.");
+      return;
+    }
+    const clamped = Number(parsed.toFixed(2));
+    const rawReq = settingsData?.requireLocation;
+    const isCurrentlyReq = rawReq === true || rawReq === 'TRUE' || rawReq === 'true' || rawReq === undefined || rawReq === null;
+    const rawHours = settingsData?.enableWorkHours;
+    const workHoursActive = rawHours === true || rawHours === 'TRUE' || rawHours === 'true' || rawHours === undefined || rawHours === null;
+
+    const updatedSettings = {
+      ...settingsData,
+      faceRecognitionThreshold: clamped,
+      face_recognition_threshold: clamped,
+      requireLocation: isCurrentlyReq,
+      enableWorkHours: workHoursActive
+    };
+    setSettingsData(updatedSettings);
+    try {
+      localStorage.setItem("settingsData_offline", JSON.stringify(updatedSettings));
+    } catch (e) {}
+
+    if (!GAS_URL) {
+      toast.success(`Batas kemiripan wajah diset ${clamped.toFixed(2)} (Mode Preview).`);
+      return;
+    }
+
+    setSavingSettings(true);
+    const loadingToastId = toast.loading("Menyimpan threshold pengenalan wajah...");
+    try {
+      const result = await sendSaveSettings({
+        faceRecognitionThreshold: clamped,
+        face_recognition_threshold: clamped,
+        toleransiTelat: settingsData?.toleransiTelat ?? 30,
+        toleransi_telat: settingsData?.toleransiTelat ?? 30,
+        requireLocation: isCurrentlyReq,
+        enableWorkHours: workHoursActive,
+        outlets: settingsData?.outlets || [],
+        positions: availablePositions
+      });
+      if (result.status === "success") {
+        toast.success(`Batas kemiripan wajah (${clamped.toFixed(2)}) tersimpan di Settings!A11:B11.`, { id: loadingToastId });
+      } else {
+        toast.error(`Gagal menyimpan: ${result.message}`, { id: loadingToastId });
+      }
+    } catch (e: any) {
+      toast.error(`Error menyimpan threshold wajah: ${e.message}`, { id: loadingToastId });
+    } finally {
+      setSavingSettings(false);
     }
   };
 
@@ -2155,26 +2248,74 @@ export default function App() {
           <div className="w-full max-w-md bg-white rounded-xl shadow-lg border border-neutral-200 overflow-hidden">
             
             {/* Header */}
-            <div className="bg-[#cc0000] p-4 flex items-center justify-between gap-3">
-              <div className="text-left">
+            <div className="bg-[#cc0000] p-4 flex items-center justify-between gap-2">
+              <div className="text-left min-w-0">
                 <h1 className="text-lg font-bold text-white tracking-wide">ABSENSI J&amp;T</h1>
-                <p className="text-[11px] text-red-100">Sesi Pegawai Terautentikasi</p>
+                <p className="text-[11px] text-red-100 truncate">Sesi Pegawai Terautentikasi</p>
               </div>
-              <button
-                type="button"
-                onClick={() => handleEmployeeLogout(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-bold transition cursor-pointer shrink-0"
-                title="Keluar dari sesi pegawai"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Keluar</span>
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBiometricModalTab('device');
+                    setBiometricModalOpen(true);
+                  }}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-bold transition cursor-pointer"
+                  title="Kelola Fingerprint, Face ID & Wajah"
+                >
+                  <Fingerprint className="w-3.5 h-3.5" />
+                  <span>Biometric</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleEmployeeLogout(true)}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-bold transition cursor-pointer"
+                  title="Keluar dari sesi pegawai"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Keluar</span>
+                </button>
+              </div>
             </div>
 
 
         {/* Formulir */}
         <div className="p-6 space-y-5">
 
+          {/* Post-login enrollment prompt after PIN login when no biometric is registered yet */}
+          {!employeeSession.hasWebAuthn && !employeeSession.hasFaceDescriptor && !dismissedBiometricPrompt && (
+            <div className="p-3 rounded-xl bg-red-50/80 border border-red-200 flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <Fingerprint className="w-4 h-4 text-[#cc0000] shrink-0 mt-0.5" />
+                <div className="text-xs text-neutral-800">
+                  <p className="font-bold">Daftarkan Biometric untuk login lebih cepat?</p>
+                  <p className="text-[11px] text-neutral-600 mt-0.5">
+                    Aktifkan sidik jari atau wajah agar absen cukup 1 tap tanpa ketik PIN.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBiometricModalTab('device');
+                    setBiometricModalOpen(true);
+                  }}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#cc0000] hover:bg-[#a30000] text-white text-xs font-bold cursor-pointer"
+                >
+                  Aktifkan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDismissedBiometricPrompt(true)}
+                  aria-label="Tutup saran biometric"
+                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-neutral-500 hover:bg-red-100 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-4">
             {/* Identitas Pegawai Terkunci dari Sesi */}
@@ -3923,6 +4064,49 @@ export default function App() {
                             </div>
                           </div>
 
+                          {/* Threshold Pengenalan Wajah (face_recognition_threshold) */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-3.5 mb-5 rounded-xl bg-neutral-50 border border-neutral-200 shadow-sm">
+                            <div className="flex items-start gap-3">
+                              <div className="p-2 rounded-lg bg-red-50 text-[#cc0000] border border-red-100 shrink-0">
+                                <ScanFace className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-neutral-800 text-sm">Batas Kemiripan Wajah</span>
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-800">
+                                    Settings!A11:B11
+                                  </span>
+                                </div>
+                                <p className="text-xs text-neutral-600 mt-0.5">
+                                  Ambang jarak Euclidean verifikasi wajah (0.30–0.85, default 0.60). Nilai lebih kecil berarti lebih ketat.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                              <div className="flex items-center bg-white border border-neutral-300 rounded-lg p-1.5 px-3 focus-within:ring-2 focus-within:ring-[#cc0000] focus-within:border-transparent transition shadow-sm">
+                                <input
+                                  type="number"
+                                  min="0.30"
+                                  max="0.85"
+                                  step="0.05"
+                                  value={faceThresholdInput}
+                                  onChange={(e) => setFaceThresholdInput(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFaceThreshold(); }}
+                                  className="w-16 font-extrabold text-center text-sm outline-none text-neutral-800 font-mono"
+                                  placeholder="0.60"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleSaveFaceThreshold}
+                                disabled={savingSettings}
+                                className="px-4 py-2 bg-[#cc0000] hover:bg-red-700 text-white font-bold text-xs rounded-lg shadow-sm transition disabled:opacity-50 cursor-pointer"
+                              >
+                                Simpan
+                              </button>
+                            </div>
+                          </div>
+
                           {/* Form Tambah Posisi */}
                           <div className="flex items-center gap-2 mb-5">
                             <input
@@ -4307,6 +4491,107 @@ export default function App() {
           Gunakan tombol di atas agar pengaturan sistem terbaru muncul di HP Anda.
         </p>
       </div>
+
+      {/* Modal Manajemen Biometric Pegawai (WebAuthn + Face Recognition) */}
+      {biometricModalOpen && employeeSession && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setBiometricModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-[#cc0000] px-5 py-4 text-white flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-bold text-base">Pengaturan Biometric</h2>
+                <p className="text-[11px] text-red-100">
+                  {employeeSession.nama} {employeeSession.idPegawai ? `(${employeeSession.idPegawai})` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBiometricModalOpen(false)}
+                aria-label="Tutup pengaturan biometric"
+                className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-white/15 hover:bg-white/25 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-neutral-100 border-b border-neutral-200 grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setBiometricModalTab('device')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                  biometricModalTab === 'device'
+                    ? 'bg-white text-[#cc0000] shadow-sm border border-neutral-200'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                <Fingerprint className="w-4 h-4 shrink-0" />
+                <span>Fingerprint / Face ID</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBiometricModalTab('face')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                  biometricModalTab === 'face'
+                    ? 'bg-white text-[#cc0000] shadow-sm border border-neutral-200'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                <ScanFace className="w-4 h-4 shrink-0" />
+                <span>Wajah (Kamera)</span>
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1">
+              {biometricModalTab === 'device' ? (
+                <DaftarBiometric
+                  employeeNama={employeeSession.nama}
+                  employeeId={employeeSession.idPegawai}
+                  hasFace={!!employeeSession.hasFaceDescriptor}
+                  onDevicesChanged={(devices) => {
+                    const updated: EmployeeSession = {
+                      ...employeeSession,
+                      hasWebAuthn: devices.length > 0,
+                      webAuthnDeviceCount: devices.length
+                    };
+                    setEmployeeSession(updated);
+                    setEmployeeSessionState(updated);
+                  }}
+                  onSessionExpired={() => {
+                    setBiometricModalOpen(false);
+                    handleEmployeeLogout(false);
+                    toast.error('Sesi pegawai berakhir. Silakan login ulang.');
+                  }}
+                />
+              ) : (
+                <DaftarWajah
+                  employeeNama={employeeSession.nama}
+                  employeeId={employeeSession.idPegawai}
+                  hasWebAuthn={!!employeeSession.hasWebAuthn}
+                  initialHasFace={!!employeeSession.hasFaceDescriptor}
+                  onFaceStatusChanged={(hasFace) => {
+                    const updated: EmployeeSession = {
+                      ...employeeSession,
+                      hasFaceDescriptor: hasFace
+                    };
+                    setEmployeeSession(updated);
+                    setEmployeeSessionState(updated);
+                  }}
+                  onSessionExpired={() => {
+                    setBiometricModalOpen(false);
+                    handleEmployeeLogout(false);
+                    toast.error('Sesi pegawai berakhir. Silakan login ulang.');
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

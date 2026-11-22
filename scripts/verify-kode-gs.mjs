@@ -162,6 +162,7 @@ function createGasEnv(initialTimeIso = '2026-11-16T01:30:00.000Z', opts = {}) {
     console,
     Date: MockDate,
     Math, JSON, Number, String, Array, Object, Boolean, parseInt, parseFloat, isNaN, isFinite, RegExp, Error,
+    BigInt, Uint8Array, Int32Array, DataView, ArrayBuffer, TextEncoder, TextDecoder,
     SpreadsheetApp: { openById: () => ssMock },
     LockService: { getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) },
     CacheService: {
@@ -1454,4 +1455,296 @@ assert.equal(appTsx.includes('.catch(() => {})'), false, 'verifyOwnerSessionApi 
   assert.equal(verifyAfterLogout.authRequired, true);
 }
 
-console.log('ALL 16 EXISTING + 18 PHASE A + 14 PHASE B + 15 LAYERED SECURITY TESTS (63 TOTAL) PASSED SUCCESSFULLY');
+// ==================== v2.11.0 HYBRID BIOMETRIC AUTHENTICATION TESTS (HB-1..HB-17) ====================
+
+function toB64Url(bufOrUint8) {
+  return Buffer.from(bufOrUint8).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function buildMockAuthenticatorData(rpId, flags, signCount) {
+  const rpHash = crypto.createHash('sha256').update(rpId, 'utf8').digest();
+  const flagBuf = Buffer.from([flags]);
+  const cntBuf = Buffer.alloc(4);
+  cntBuf.writeUInt32BE(signCount, 0);
+  return Buffer.concat([rpHash, flagBuf, cntBuf]);
+}
+
+function signMockWebAuthnAssertion(privateKey, challenge, origin, rpId, signCount, flags = 0x05) {
+  const authData = buildMockAuthenticatorData(rpId, flags, signCount);
+  const clientData = Buffer.from(JSON.stringify({
+    type: 'webauthn.get',
+    challenge,
+    origin,
+    crossOrigin: false
+  }), 'utf8');
+  const clientDataHash = crypto.createHash('sha256').update(clientData).digest();
+  const signedPayload = Buffer.concat([authData, clientDataHash]);
+  const signature = crypto.sign('sha256', signedPayload, privateKey);
+  return {
+    authenticatorData: toB64Url(authData),
+    clientDataJSON: toB64Url(clientData),
+    signature: toB64Url(signature),
+    counter: signCount
+  };
+}
+
+function createNormalizedDescriptor(seedVal, deltaOnFirst = 0) {
+  const arr = [];
+  for (let i = 0; i < 128; i++) {
+    let v = Math.sin((i + 1) * seedVal) * 0.25;
+    if (i === 0) v += deltaOnFirst;
+    arr.push(Number(v.toFixed(6)));
+  }
+  return arr;
+}
+
+// HB-1..HB-10: WebAuthn E2E registration, P-256 ECDSA assertion verification, anti-replay, multi-device, origin & revoke
+{
+  const hbEnv = createGasEnv('2026-11-21T01:00:00.000Z'); // 08:00 WIB
+  const ownTok = hbEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'owner-hb' }).token;
+  const riskaTok = loginTestEmployee(hbEnv, ownTok, 'Riska', 'EMP001');
+
+  const kp1 = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const kp1SpkiB64Url = toB64Url(kp1.publicKey.export({ type: 'spki', format: 'der' }));
+  const cred1Id = toB64Url(crypto.randomBytes(24));
+
+  const rpId = 'absen-jnt.vercel.app';
+  const trustedOrigin = 'https://absen-jnt.vercel.app';
+
+  // E.2: Registration challenge & WebAuthn register stores DataPegawai cols N-S (14..19)
+  const regCh1 = hbEnv.ctx.getWebAuthnRegisterChallenge({ rpId }, riskaTok);
+  assert.equal(regCh1.status, 'success');
+  assert.ok(regCh1.challenge);
+
+  const regClientData1 = toB64Url(Buffer.from(JSON.stringify({
+    type: 'webauthn.create',
+    challenge: regCh1.challenge,
+    origin: trustedOrigin
+  }), 'utf8'));
+  const regAuthData1 = toB64Url(buildMockAuthenticatorData(rpId, 0x45, 1));
+  const regRes1 = hbEnv.ctx.registerWebAuthnCredential({
+    credentialId: cred1Id,
+    publicKey: kp1SpkiB64Url,
+    deviceName: 'Samsung A54 · Chrome',
+    clientDataJSON: regClientData1,
+    authenticatorData: regAuthData1
+  }, riskaTok);
+  assert.equal(regRes1.status, 'success', regRes1.message);
+  assert.equal(regRes1.devices.length, 1);
+
+  const pegSheet = hbEnv.sheets.get('DataPegawai');
+  const riskaRow = pegSheet.rows[1];
+  assert.ok(JSON.parse(riskaRow[13]).includes(cred1Id), 'Col N (WebAuthnCredentialId) stores JSON array with credentialId');
+  assert.ok(JSON.parse(riskaRow[14]).length === 1, 'Col O (WebAuthnPublicKey) stores normalized COSE public key');
+  assert.equal(JSON.parse(riskaRow[15])[0], 1, 'Col P (WebAuthnCounter) stores counter');
+  assert.ok(JSON.parse(riskaRow[16])[0], 'Col Q (WebAuthnRegisteredAt) populated');
+  assert.ok(JSON.parse(riskaRow[17])[0], 'Col R (WebAuthnLastUsedAt) populated');
+  assert.equal(JSON.parse(riskaRow[18])[0], 'Samsung A54 · Chrome', 'Col S (WebAuthnDeviceName) populated');
+
+  // E.10: Untrusted origin rejected
+  const regChBadOrigin = hbEnv.ctx.getWebAuthnRegisterChallenge({ rpId }, riskaTok);
+  const badOriginRes = hbEnv.ctx.registerWebAuthnCredential({
+    credentialId: toB64Url(crypto.randomBytes(16)),
+    publicKey: kp1SpkiB64Url,
+    clientDataJSON: toB64Url(Buffer.from(JSON.stringify({
+      type: 'webauthn.create',
+      challenge: regChBadOrigin.challenge,
+      origin: 'https://evil-phish.example.com'
+    }), 'utf8')),
+    authenticatorData: regAuthData1
+  }, riskaTok);
+  assert.equal(badOriginRes.status, 'error', 'Untrusted origin must be rejected');
+
+  // E.9: Register second WebAuthn device (multi-device)
+  const kp2 = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const kp2SpkiB64Url = toB64Url(kp2.publicKey.export({ type: 'spki', format: 'der' }));
+  const cred2Id = toB64Url(crypto.randomBytes(24));
+  const regCh2 = hbEnv.ctx.getWebAuthnRegisterChallenge({ rpId }, riskaTok);
+  const regRes2 = hbEnv.ctx.registerWebAuthnCredential({
+    credentialId: cred2Id,
+    publicKey: kp2SpkiB64Url,
+    deviceName: 'Laptop Kantor · Edge',
+    clientDataJSON: toB64Url(Buffer.from(JSON.stringify({
+      type: 'webauthn.create',
+      challenge: regCh2.challenge,
+      origin: trustedOrigin
+    }), 'utf8')),
+    authenticatorData: toB64Url(buildMockAuthenticatorData(rpId, 0x45, 0))
+  }, riskaTok);
+  assert.equal(regRes2.status, 'success', regRes2.message);
+  assert.equal(regRes2.devices.length, 2, 'Two devices stored for same employee');
+
+  // Logout before WebAuthn login
+  assert.equal(hbEnv.ctx.employeeLogout(riskaTok).status, 'success');
+
+  // E.3: WebAuthn login with valid ECDSA P-256 signed assertion
+  const loginCh1 = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-1' });
+  assert.equal(loginCh1.status, 'success');
+  const signed1 = signMockWebAuthnAssertion(kp1.privateKey, loginCh1.challenge, trustedOrigin, rpId, 2);
+  const loginRes1 = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: cred1Id,
+    ...signed1,
+    deviceId: 'dev-hb-1'
+  });
+  assert.equal(loginRes1.status, 'success', loginRes1.message);
+  assert.ok(loginRes1.employeeToken, 'WebAuthn login issues employeeToken');
+  assert.equal(loginRes1.authMethod, 'webauthn');
+  assert.equal(JSON.parse(pegSheet.rows[1][15])[0], 2, 'WebAuthn counter incremented on login');
+
+  // E.7 & E.8: Anti-replay rejects counter <= storedCounter (2), and rejects forged/tampered signature
+  const loginChReplay = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-1' });
+  const replayAssertion = signMockWebAuthnAssertion(kp1.privateKey, loginChReplay.challenge, trustedOrigin, rpId, 2);
+  const replayRes = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: cred1Id,
+    ...replayAssertion,
+    deviceId: 'dev-hb-1'
+  });
+  assert.equal(replayRes.status, 'error', 'Counter <= storedCounter must fail anti-replay check');
+
+  const loginChBadSig = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-1' });
+  const forgedAssertion = signMockWebAuthnAssertion(kp2.privateKey, loginChBadSig.challenge, trustedOrigin, rpId, 5); // Wrong private key for cred1Id
+  const badSigRes = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: cred1Id,
+    ...forgedAssertion,
+    deviceId: 'dev-hb-1'
+  });
+  assert.equal(badSigRes.status, 'error', 'Invalid ECDSA signature must be rejected');
+
+  // E.5: Unregistered credential fails
+  const loginChUnreg = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-1' });
+  const unregAssertion = signMockWebAuthnAssertion(kp1.privateKey, loginChUnreg.challenge, trustedOrigin, rpId, 9);
+  const unregRes = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: 'NON_EXISTENT_CRED_ID',
+    ...unregAssertion,
+    deviceId: 'dev-hb-1'
+  });
+  assert.equal(unregRes.status, 'error', 'Unregistered credential must fail');
+
+  // E.6 & E.9: Revoke cred1Id -> cred1Id login fails, cred2Id still succeeds
+  const rev1 = hbEnv.ctx.revokeWebAuthnDevice({ credentialId: cred1Id }, { employeeToken: loginRes1.employeeToken });
+  assert.equal(rev1.status, 'success');
+  assert.equal(rev1.devices.length, 1);
+
+  const chAfterRev = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-1' });
+  const cred1AfterRev = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: cred1Id,
+    ...signMockWebAuthnAssertion(kp1.privateKey, chAfterRev.challenge, trustedOrigin, rpId, 10),
+    deviceId: 'dev-hb-1'
+  });
+  assert.equal(cred1AfterRev.status, 'error', 'Revoked device must fail login');
+
+  const chDev2 = hbEnv.ctx.getWebAuthnLoginChallenge({ identifier: 'EMP001', rpId, deviceId: 'dev-hb-2' });
+  const cred2Login = hbEnv.ctx.loginWebAuthn({
+    identifier: 'EMP001',
+    credentialId: cred2Id,
+    ...signMockWebAuthnAssertion(kp2.privateKey, chDev2.challenge, trustedOrigin, rpId, 3),
+    deviceId: 'dev-hb-2'
+  });
+  assert.equal(cred2Login.status, 'success', 'Remaining second WebAuthn device still logs in cleanly');
+
+  // Owner also able to see masked devices and delete cred2Id
+  const empListOwner = hbEnv.ctx.getDataPenempatan(ownTok);
+  const riskaOwner = empListOwner.data.find((e) => e.idPegawai === 'EMP001');
+  assert.equal(riskaOwner.hasWebAuthn, true);
+  assert.equal(riskaOwner.webAuthnDeviceCount, 1);
+  assert.equal(JSON.stringify(riskaOwner).includes(kp2SpkiB64Url), false, 'Public keys never exposed in getDataPenempatan');
+}
+
+// HB-11..HB-15: Face Recognition registration, match, mismatch, threshold config, delete
+{
+  const faceEnv = createGasEnv('2026-11-21T01:00:00.000Z');
+  const ownTok = faceEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'owner-face' }).token;
+  const budiTok = loginTestEmployee(faceEnv, ownTok, 'Budi Kurir', 'EMP002');
+
+  const baseDesc = createNormalizedDescriptor(0.42, 0);
+  const closeDesc = createNormalizedDescriptor(0.42, 0.25); // distance = 0.25 < default 0.60
+  const mediumDesc = createNormalizedDescriptor(0.42, 0.65); // distance = 0.65 > 0.60, < 0.75
+
+  // E.11: Register face descriptor saves Col I & Col J
+  const regFace = faceEnv.ctx.registerFaceDescriptor({ faceDescriptor: baseDesc, overwrite: true }, budiTok);
+  assert.equal(regFace.status, 'success', regFace.message);
+  const budiRow = faceEnv.sheets.get('DataPegawai').rows[2];
+  assert.ok(budiRow[8], 'Col I (SidikWajah timestamp) updated');
+  assert.equal(JSON.parse(budiRow[9]).length, 128, 'Col J (FaceDescriptor 128 floats) saved');
+
+  // E.12: Matching descriptor logs in & issues employeeToken
+  const faceOk = faceEnv.ctx.loginFaceRecognition({ identifier: 'EMP002', faceDescriptor: closeDesc, deviceId: 'face-dev-1' });
+  assert.equal(faceOk.status, 'success', faceOk.message);
+  assert.ok(faceOk.employeeToken);
+  assert.equal(faceOk.authMethod, 'face');
+
+  // E.13: Mismatched descriptor (> 0.60 default) fails with Wajah tidak cocok
+  const faceMismatch = faceEnv.ctx.loginFaceRecognition({ identifier: 'EMP002', faceDescriptor: mediumDesc, deviceId: 'face-dev-1' });
+  assert.equal(faceMismatch.status, 'failed');
+  assert.match(faceMismatch.message, /Wajah tidak cocok/i);
+
+  // E.14: Raising Settings face_recognition_threshold to 0.75 allows distance 0.65; lowering to 0.40 rejects 0.25 if >0.40 -> let's verify!
+  const saveThresh = faceEnv.ctx.saveSettings({ face_recognition_threshold: 0.75 }, ownTok);
+  assert.equal(saveThresh.status, 'success');
+  assert.equal(faceEnv.ctx.getSettings().data.faceRecognitionThreshold, 0.75);
+
+  const faceMediumNowOk = faceEnv.ctx.loginFaceRecognition({ identifier: 'EMP002', faceDescriptor: mediumDesc, deviceId: 'face-dev-2' });
+  assert.equal(faceMediumNowOk.status, 'success', 'Adjusted Settings threshold 0.75 accepts distance 0.65');
+
+  // E.15: Delete face profile clears descriptor and blocks face login
+  const delFace = faceEnv.ctx.deleteFaceDescriptor({}, { employeeToken: budiTok });
+  assert.equal(delFace.status, 'success');
+  assert.equal(faceEnv.sheets.get('DataPegawai').rows[2][9], '', 'Col J cleared on deleteFaceDescriptor');
+  const faceAfterDel = faceEnv.ctx.loginFaceRecognition({ identifier: 'EMP002', faceDescriptor: baseDesc, deviceId: 'face-dev-3' });
+  assert.equal(faceAfterDel.status, 'failed', 'Deleted face profile cannot log in');
+}
+
+// HB-16..HB-17: Biometric rate limiting & AuditLog logging without sensitive biometric key/descriptor leaks
+{
+  const rlEnv = createGasEnv('2026-11-21T02:00:00.000Z');
+  const ownTok = rlEnv.ctx.ownerLogin({ password: 'SecretOwner#2026', deviceId: 'owner-rl' }).token;
+  const riskaTok = loginTestEmployee(rlEnv, ownTok, 'Riska', 'EMP001');
+
+  const kp = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const kpSpki = toB64Url(kp.publicKey.export({ type: 'spki', format: 'der' }));
+  const credId = toB64Url(crypto.randomBytes(16));
+  const regCh = rlEnv.ctx.getWebAuthnRegisterChallenge({ rpId: 'localhost' }, riskaTok);
+  rlEnv.ctx.registerWebAuthnCredential({
+    credentialId: credId,
+    publicKey: kpSpki,
+    deviceName: 'Pixel Test',
+    clientDataJSON: toB64Url(Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: regCh.challenge, origin: 'http://localhost:3000' }), 'utf8')),
+    authenticatorData: toB64Url(buildMockAuthenticatorData('localhost', 0x45, 0))
+  }, riskaTok);
+
+  const baseDesc = createNormalizedDescriptor(0.77, 0);
+  const badDesc = createNormalizedDescriptor(0.77, 1.5);
+  rlEnv.ctx.registerFaceDescriptor({ faceDescriptor: baseDesc, overwrite: true }, riskaTok);
+
+  // E.16: 10 attempts allowed, 11th blocked for loginWebAuthn and loginFaceRecognition
+  for (let i = 0; i < 10; i++) {
+    const resW = rlEnv.ctx.loginWebAuthn({ identifier: 'EMP001', credentialId: 'bad', deviceId: 'bio-spam-dev' });
+    assert.equal(resW.rateLimited, undefined);
+    const resF = rlEnv.ctx.loginFaceRecognition({ identifier: 'EMP001', faceDescriptor: badDesc, deviceId: 'bio-spam-dev' });
+    assert.equal(resF.rateLimited, undefined);
+  }
+  const blockedW = rlEnv.ctx.loginWebAuthn({ identifier: 'EMP001', credentialId: 'bad', deviceId: 'bio-spam-dev' });
+  assert.equal(blockedW.rateLimited, true, '11th WebAuthn attempt within 15m rate-limited');
+  const blockedF = rlEnv.ctx.loginFaceRecognition({ identifier: 'EMP001', faceDescriptor: badDesc, deviceId: 'bio-spam-dev' });
+  assert.equal(blockedF.rateLimited, true, '11th Face login attempt within 15m rate-limited');
+
+  // E.17: AuditLog records registration + login attempts and redacts raw keys/descriptors
+  const auditLogs = rlEnv.ctx.getAuditLogs({ limit: 80 }, ownTok);
+  assert.equal(auditLogs.status, 'success');
+  assert.ok(auditLogs.data.some((l) => l.action === 'registerWebAuthnCredential' && l.status === 'SUCCESS'));
+  assert.ok(auditLogs.data.some((l) => l.action === 'registerFaceDescriptor' && l.status === 'SUCCESS'));
+  assert.ok(auditLogs.data.some((l) => l.action === 'loginWebAuthn' && l.status === 'FAILED'));
+  assert.ok(auditLogs.data.some((l) => l.action === 'loginFaceRecognition' && l.status === 'FAILED'));
+
+  const auditStr = JSON.stringify(auditLogs.data);
+  assert.equal(auditStr.includes(String(baseDesc[0])), false, 'AuditLog must not leak raw faceDescriptor vector values');
+  assert.equal(auditStr.includes(kpSpki), false, 'AuditLog must not leak publicKey');
+}
+
+console.log('ALL 16 EXISTING + 18 PHASE A + 14 PHASE B + 15 LAYERED SECURITY + 17 HYBRID BIOMETRIC TESTS (80 TOTAL) PASSED SUCCESSFULLY');
+

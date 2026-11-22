@@ -1,4 +1,4 @@
-const BACKEND_VERSION = "2026-11-21-v2.10.0-layered-security";
+const BACKEND_VERSION = "2026-11-21-v2.11.0-hybrid-biometric";
 const FOLDER_INTI_ID = "14Spw44yA0pGTajzildh0egJ-KuqFF7Gq";
 const SPREADSHEET_ID = "1f9WVUQSVShJyqRnNgR3MlynCk3znbDQ8qoAWMLb1fWA";
 const FOLDER_FOTO_ID = "1mhDtsYrdtdv2nl5dwjax8URSAGKYzatY";
@@ -63,7 +63,10 @@ function getDeploymentInfo() {
       "rateLimiting",
       "auditLog",
       "ownerPasswordRotation",
-      "ownerSessionManagement"
+      "ownerSessionManagement",
+      "webAuthnBiometric",
+      "faceRecognitionAuth",
+      "biometricLivenessGate"
     ]
   };
 }
@@ -194,6 +197,24 @@ function doPost(e) {
       result = employeeLogout(employeeToken);
     } else if (action === 'setEmployeePin') {
       result = setEmployeePin(data, ownerToken);
+    } else if (action === 'getWebAuthnRegisterChallenge') {
+      result = getWebAuthnRegisterChallenge(data, employeeToken);
+    } else if (action === 'registerWebAuthnCredential') {
+      result = registerWebAuthnCredential(data, employeeToken);
+    } else if (action === 'getWebAuthnLoginChallenge') {
+      result = getWebAuthnLoginChallenge(Object.assign({}, (payload.data || payload), { deviceId: deviceId, userAgent: userAgent }));
+    } else if (action === 'loginWebAuthn') {
+      result = loginWebAuthn(Object.assign({}, (payload.data || payload), { deviceId: deviceId, userAgent: userAgent }));
+    } else if (action === 'getWebAuthnDevices') {
+      result = getWebAuthnDevices(data, authTokens);
+    } else if (action === 'revokeWebAuthnDevice') {
+      result = revokeWebAuthnDevice(data, authTokens);
+    } else if (action === 'registerFaceDescriptor') {
+      result = registerFaceDescriptor(data, employeeToken);
+    } else if (action === 'deleteFaceDescriptor') {
+      result = deleteFaceDescriptor(data, authTokens);
+    } else if (action === 'loginFaceRecognition') {
+      result = loginFaceRecognition(Object.assign({}, (payload.data || payload), { deviceId: deviceId, userAgent: userAgent }));
     } else if (action === 'getPegawai') {
       result = getPegawai(ownerToken);
     } else if (action === 'getRiwayat') {
@@ -253,6 +274,9 @@ function doPost(e) {
     const selfLoggedActions = [
       'ownerLogin', 'ownerLogout', 'changeOwnerPassword', 'getOwnerSessions',
       'revokeOwnerSession', 'setEmployeePin', 'employeeLogin', 'employeeLogout',
+      'getWebAuthnRegisterChallenge', 'registerWebAuthnCredential',
+      'getWebAuthnLoginChallenge', 'loginWebAuthn', 'revokeWebAuthnDevice',
+      'registerFaceDescriptor', 'deleteFaceDescriptor', 'loginFaceRecognition',
       'getPegawai', 'getRiwayat', 'getRiwayatBulan', 'getRingkasanHarian',
       'getPegawaiDetail', 'processForm'
     ];
@@ -475,7 +499,7 @@ function sanitizeAuditDetails(details) {
   const keys = Object.keys(details);
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
-    if (/password|pin|token|secret|image|base64|foto/i.test(k) && k.indexOf("Prefix") === -1 && k.indexOf("Mask") === -1 && k.indexOf("Count") === -1) {
+    if (/password|pin|token|secret|image|base64|foto|facedescriptor|publickey|signature|clientdatajson|authenticatordata/i.test(k) && k.indexOf("Prefix") === -1 && k.indexOf("Mask") === -1 && k.indexOf("Count") === -1 && k.indexOf("Has") === -1) {
       out[k] = "[REDACTED]";
     } else {
       const v = details[k];
@@ -1045,7 +1069,7 @@ function getAuditLogs(filters, ownerToken) {
   return { status: "success", data: logs, backendVersion: BACKEND_VERSION };
 }
 
-// ==================== EMPLOYEE PIN AUTHENTICATION ====================
+// ==================== EMPLOYEE PIN, WEBAUTHN & FACE AUTHENTICATION ====================
 
 function ensurePinColumns(sheet) {
   if (!sheet) return;
@@ -1057,10 +1081,117 @@ function ensurePinColumns(sheet) {
   if (hM !== "PinLastUsed") sheet.getRange(1, 13).setValue("PinLastUsed");
 }
 
+function ensureWebAuthnColumns(sheet) {
+  if (!sheet) return;
+  ensurePinColumns(sheet);
+  const headers = [
+    { col: 14, name: "WebAuthnCredentialId" },
+    { col: 15, name: "WebAuthnPublicKey" },
+    { col: 16, name: "WebAuthnCounter" },
+    { col: 17, name: "WebAuthnRegisteredAt" },
+    { col: 18, name: "WebAuthnLastUsedAt" },
+    { col: 19, name: "WebAuthnDeviceName" }
+  ];
+  for (let i = 0; i < headers.length; i++) {
+    const h = String(sheet.getRange(1, headers[i].col).getValue() || "").trim();
+    if (h !== headers[i].name) {
+      sheet.getRange(1, headers[i].col).setValue(headers[i].name);
+    }
+  }
+}
+
+function parseJsonStringArrayCell(raw) {
+  if (raw === null || raw === undefined || raw === "") return [];
+  if (Array.isArray(raw)) return raw;
+  const s = String(raw).trim();
+  if (!s) return [];
+  if (s.charAt(0) === "[") {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) {}
+  }
+  return [s];
+}
+
+function readWebAuthnDevicesFromRow(row) {
+  if (!row) return [];
+  const credIds = parseJsonStringArrayCell(row[13]);
+  const pubKeys = parseJsonStringArrayCell(row[14]);
+  const counters = parseJsonStringArrayCell(row[15]);
+  const regAts = parseJsonStringArrayCell(row[16]);
+  const lastUseds = parseJsonStringArrayCell(row[17]);
+  const devNames = parseJsonStringArrayCell(row[18]);
+
+  const devices = [];
+  for (let i = 0; i < credIds.length; i++) {
+    const cid = credIds[i] ? String(credIds[i]).trim() : "";
+    const pk = pubKeys[i] ? String(pubKeys[i]).trim() : "";
+    if (!cid || !pk) continue;
+    const cnt = parseInt(counters[i], 10);
+    devices.push({
+      credentialId: cid,
+      publicKey: pk,
+      counter: isNaN(cnt) || cnt < 0 ? 0 : cnt,
+      registeredAt: regAts[i] ? String(regAts[i]).trim() : "",
+      lastUsedAt: lastUseds[i] ? String(lastUseds[i]).trim() : "",
+      deviceName: devNames[i] ? String(devNames[i]).trim() : ("Perangkat " + (devices.length + 1))
+    });
+  }
+  return devices;
+}
+
+function writeWebAuthnDevicesToRow(sheet, rowIndex, devices) {
+  ensureWebAuthnColumns(sheet);
+  const clean = Array.isArray(devices) ? devices.slice(0, 5) : [];
+  if (clean.length === 0) {
+    sheet.getRange(rowIndex, 14, 1, 6).setValues([["", "", "", "", "", ""]]);
+    return;
+  }
+  const credIds = JSON.stringify(clean.map(function(d) { return d.credentialId; }));
+  const pubKeys = JSON.stringify(clean.map(function(d) { return d.publicKey; }));
+  const counters = JSON.stringify(clean.map(function(d) { return Number(d.counter) || 0; }));
+  const regAts = JSON.stringify(clean.map(function(d) { return d.registeredAt || ""; }));
+  const lastUseds = JSON.stringify(clean.map(function(d) { return d.lastUsedAt || ""; }));
+  const devNames = JSON.stringify(clean.map(function(d) { return d.deviceName || "Perangkat"; }));
+  sheet.getRange(rowIndex, 14, 1, 6).setValues([[credIds, pubKeys, counters, regAts, lastUseds, devNames]]);
+}
+
+function parseFaceDescriptorArray(raw) {
+  if (!raw) return null;
+  let arr = raw;
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s || s.charAt(0) !== "[") return null;
+    try { arr = JSON.parse(s); } catch (e) { return null; }
+  }
+  if (!Array.isArray(arr) || arr.length !== 128) return null;
+  const out = [];
+  for (let i = 0; i < 128; i++) {
+    const n = Number(arr[i]);
+    if (!isFinite(n)) return null;
+    out.push(n);
+  }
+  return out;
+}
+
+function formatPublicWebAuthnDevices(devices) {
+  return (devices || []).map(function(d) {
+    return {
+      credentialId: d.credentialId,
+      credentialIdMask: maskTokenPreview(d.credentialId),
+      deviceName: d.deviceName || "Perangkat",
+      registeredAt: d.registeredAt || "",
+      lastUsedAt: d.lastUsedAt || "",
+      counter: Number(d.counter) || 0
+    };
+  });
+}
+
 function findActiveEmployeeRowForAuth(ss, identifier) {
   const sheet = (ss || getSpreadsheet()).getSheetByName("DataPegawai");
   if (!sheet) return { ok: false, reason: "no_sheet" };
-  ensurePinColumns(sheet);
+  ensureWebAuthnColumns(sheet);
   const values = sheet.getDataRange().getValues();
   const cleanIdOrName = String(identifier || "").trim();
   if (!cleanIdOrName) return { ok: false, reason: "empty" };
@@ -1076,13 +1207,20 @@ function findActiveEmployeeRowForAuth(ss, identifier) {
     if (statusRaw !== "AKTIF") continue;
 
     const idPegawai = values[i][1] ? String(values[i][1]).trim() : "";
+    const webAuthnDevices = readWebAuthnDevicesFromRow(values[i]);
+    const faceDesc = parseFaceDescriptorArray(values[i][9]);
     const rec = {
       rowIndex: i + 1,
       nama: nama,
       idPegawai: idPegawai,
+      sidikWajah: values[i][8] ? String(values[i][8]).trim() : "",
+      faceDescriptor: faceDesc,
+      hasFaceDescriptor: !!faceDesc,
       pinHash: values[i][10] ? String(values[i][10]).trim() : "",
       pinCreatedAt: values[i][11] ? String(values[i][11]).trim() : "",
-      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : ""
+      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : "",
+      webAuthnDevices: webAuthnDevices,
+      hasWebAuthn: webAuthnDevices.length > 0
     };
 
     if (idPegawai && normalizeTextKey(idPegawai) === normKey) {
@@ -1098,6 +1236,83 @@ function findActiveEmployeeRowForAuth(ss, identifier) {
   if (nameMatches.length === 1) return { ok: true, sheet: sheet, employee: nameMatches[0] };
   if (nameMatches.length > 1) return { ok: false, reason: "ambiguous_name" };
   return { ok: false, reason: "not_found" };
+}
+
+function issueEmployeeSession(ss, emp, deviceId, userAgent, authMethod) {
+  const props = PropertiesService.getScriptProperties();
+  const nowMs = new Date().getTime();
+  const nowIso = getJakartaIsoTimestampStr();
+  const method = authMethod || "pin";
+
+  const todayDmy = getJakartaDateStr();
+  let empOutlet = "";
+  let empPosisi = "";
+  try {
+    const ctx = buildAssignmentContext(ss, todayDmy);
+    const assign = getEffectiveWorkAssignment(emp.idPegawai || emp.nama, todayDmy, ctx);
+    empOutlet = assign.outletEfektif || "";
+    empPosisi = assign.posisiPenugasan || assign.posisiPermanen || "";
+  } catch (e) {}
+
+  const token = "EMP-" + Utilities.getUuid().replace(/-/g, "") + "-" + nowMs.toString(36);
+  const expiresAtMs = nowMs + 4 * 3600 * 1000; // 4 jam PropertiesService, 2 jam CacheService
+  const sessionObj = {
+    idPegawai: emp.idPegawai || "",
+    nama: emp.nama,
+    outlet: empOutlet,
+    posisi: empPosisi,
+    authMethod: method,
+    issuedAt: nowIso,
+    expiresAt: expiresAtMs,
+    deviceId: deviceId
+  };
+  const serialized = JSON.stringify(sessionObj);
+
+  let cacheSaved = false;
+  let propSaved = false;
+  try {
+    CacheService.getScriptCache().put("EMP_TOKEN_" + token, serialized, 7200);
+    cacheSaved = true;
+  } catch (e) {}
+  try {
+    const allProps = props.getProperties();
+    for (var k in allProps) {
+      if (k.indexOf("EMP_TOKEN_") === 0) {
+        try {
+          var o = JSON.parse(allProps[k]);
+          if (!o || !o.expiresAt || o.expiresAt < nowMs) {
+            props.deleteProperty(k);
+          }
+        } catch (err) {
+          props.deleteProperty(k);
+        }
+      }
+    }
+    props.setProperty("EMP_TOKEN_" + token, serialized);
+    propSaved = true;
+  } catch (e) {}
+
+  if (!cacheSaved && !propSaved) {
+    return { ok: false, message: "Gagal menyimpan sesi pegawai di server." };
+  }
+
+  return {
+    ok: true,
+    response: {
+      status: "success",
+      employeeToken: token,
+      nama: emp.nama,
+      idPegawai: emp.idPegawai || "",
+      outlet: empOutlet,
+      posisi: empPosisi,
+      expiresAt: expiresAtMs,
+      authMethod: method,
+      hasWebAuthn: !!emp.hasWebAuthn,
+      webAuthnDeviceCount: (emp.webAuthnDevices || []).length,
+      hasFaceDescriptor: !!emp.hasFaceDescriptor,
+      backendVersion: BACKEND_VERSION
+    }
+  };
 }
 
 function setEmployeePin(data, ownerToken) {
@@ -1160,7 +1375,7 @@ function employeeLogin(data) {
   const accountKey = normalizeTextKey(identifier || "-");
   const rl = checkRateLimit(accountKey + "|" + deviceId, "employeeLogin", 5, 15);
   if (!rl.allowed) {
-    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { reason: "rate_limit", retryAfterSeconds: rl.retryAfterSeconds });
+    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "rate_limit", retryAfterSeconds: rl.retryAfterSeconds });
     return {
       status: "error",
       rateLimited: true,
@@ -1171,19 +1386,19 @@ function employeeLogin(data) {
   }
 
   if (!identifier || !pin) {
-    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { reason: "missing_credentials" });
+    logAudit("employeeLogin", identifier || "anonymous", deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "missing_credentials" });
     return { status: "error", message: "Nama / ID Pegawai dan PIN wajib diisi.", backendVersion: BACKEND_VERSION };
   }
 
   if (!/^\d{4,6}$/.test(pin)) {
-    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { reason: "invalid_pin_format" });
+    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "invalid_pin_format" });
     return { status: "error", message: "Format PIN harus 4–6 digit angka.", backendVersion: BACKEND_VERSION };
   }
 
   const ss = getSpreadsheet();
   const lookup = findActiveEmployeeRowForAuth(ss, identifier);
   if (!lookup.ok) {
-    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { reason: lookup.reason });
+    logAudit("employeeLogin", identifier, deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: lookup.reason });
     if (lookup.reason === "ambiguous_name") {
       return {
         status: "error",
@@ -1211,7 +1426,7 @@ function employeeLogin(data) {
 
   if (lockRec.lockedUntil && lockRec.lockedUntil > nowMs) {
     const waitMins = Math.max(1, Math.ceil((lockRec.lockedUntil - nowMs) / 60000));
-    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "account_locked", idPegawai: emp.idPegawai || "-" });
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "account_locked", idPegawai: emp.idPegawai || "-" });
     return {
       status: "error",
       locked: true,
@@ -1222,7 +1437,7 @@ function employeeLogin(data) {
   }
 
   if (!emp.pinHash) {
-    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "pin_not_set", idPegawai: emp.idPegawai || "-" });
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "pin_not_set", idPegawai: emp.idPegawai || "-" });
     return {
       status: "error",
       pinNotSet: true,
@@ -1239,6 +1454,8 @@ function employeeLogin(data) {
       props.setProperty(lockKey, JSON.stringify({ failCount: nextFail, lockedUntil: nextLockedUntil }));
     } catch (e) {}
     logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", {
+      method: "pin",
+      success: false,
       reason: "wrong_pin",
       failCount: nextFail,
       locked: isNowLocked,
@@ -1274,71 +1491,14 @@ function employeeLogin(data) {
     lookup.sheet.getRange(emp.rowIndex, 13).setValue(nowIso);
   } catch (e) {}
 
-  // Resolve effective outlet/posisi for convenient frontend bootstrap
-  const todayDmy = getJakartaDateStr();
-  let empOutlet = "";
-  let empPosisi = "";
-  try {
-    const ctx = buildAssignmentContext(ss, todayDmy);
-    const assign = getEffectiveWorkAssignment(emp.idPegawai || emp.nama, todayDmy, ctx);
-    empOutlet = assign.outletEfektif || "";
-    empPosisi = assign.posisiPenugasan || assign.posisiPermanen || "";
-  } catch (e) {}
-
-  const token = "EMP-" + Utilities.getUuid().replace(/-/g, "") + "-" + nowMs.toString(36);
-  const expiresAtMs = nowMs + 4 * 3600 * 1000; // 4 jam PropertiesService, 2 jam CacheService
-  const sessionObj = {
-    idPegawai: emp.idPegawai || "",
-    nama: emp.nama,
-    outlet: empOutlet,
-    posisi: empPosisi,
-    issuedAt: nowIso,
-    expiresAt: expiresAtMs,
-    deviceId: deviceId
-  };
-  const serialized = JSON.stringify(sessionObj);
-
-  let cacheSaved = false;
-  let propSaved = false;
-  try {
-    CacheService.getScriptCache().put("EMP_TOKEN_" + token, serialized, 7200);
-    cacheSaved = true;
-  } catch (e) {}
-  try {
-    const allProps = props.getProperties();
-    for (var k in allProps) {
-      if (k.indexOf("EMP_TOKEN_") === 0) {
-        try {
-          var o = JSON.parse(allProps[k]);
-          if (!o || !o.expiresAt || o.expiresAt < nowMs) {
-            props.deleteProperty(k);
-          }
-        } catch (err) {
-          props.deleteProperty(k);
-        }
-      }
-    }
-    props.setProperty("EMP_TOKEN_" + token, serialized);
-    propSaved = true;
-  } catch (e) {}
-
-  if (!cacheSaved && !propSaved) {
-    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { reason: "storage_error" });
-    return { status: "error", message: "Gagal menyimpan sesi pegawai di server.", backendVersion: BACKEND_VERSION };
+  const issued = issueEmployeeSession(ss, emp, deviceId, userAgent, "pin");
+  if (!issued.ok) {
+    logAudit("employeeLogin", emp.nama, deviceId, userAgent, "FAILED", { method: "pin", success: false, reason: "storage_error" });
+    return { status: "error", message: issued.message, backendVersion: BACKEND_VERSION };
   }
 
-  logAudit("employeeLogin", emp.nama, deviceId, userAgent, "SUCCESS", { idPegawai: emp.idPegawai || "-" });
-
-  return {
-    status: "success",
-    employeeToken: token,
-    nama: emp.nama,
-    idPegawai: emp.idPegawai || "",
-    outlet: empOutlet,
-    posisi: empPosisi,
-    expiresAt: expiresAtMs,
-    backendVersion: BACKEND_VERSION
-  };
+  logAudit("employeeLogin", emp.nama, deviceId, userAgent, "SUCCESS", { method: "pin", success: true, idPegawai: emp.idPegawai || "-" });
+  return issued.response;
 }
 
 function checkEmployeeToken(token) {
@@ -1412,7 +1572,11 @@ function checkEmployeeToken(token) {
     idPegawai: matched.idPegawai || sessionObj.idPegawai || "",
     nama: matched.nama,
     outlet: sessionObj.outlet || "",
-    posisi: sessionObj.posisi || ""
+    posisi: sessionObj.posisi || "",
+    authMethod: sessionObj.authMethod || "pin",
+    hasWebAuthn: !!matched.hasWebAuthn,
+    webAuthnDeviceCount: matched.webAuthnDeviceCount || 0,
+    hasFaceDescriptor: !!matched.hasFaceDescriptor
   };
 }
 
@@ -1428,6 +1592,10 @@ function employeeVerify(token) {
     idPegawai: chk.idPegawai,
     outlet: chk.outlet,
     posisi: chk.posisi,
+    authMethod: chk.authMethod,
+    hasWebAuthn: chk.hasWebAuthn,
+    webAuthnDeviceCount: chk.webAuthnDeviceCount,
+    hasFaceDescriptor: chk.hasFaceDescriptor,
     backendVersion: BACKEND_VERSION
   };
 }
@@ -1465,6 +1633,1227 @@ function employeeLogout(token) {
 
   logAudit("employeeLogout", actor, "", "", "SUCCESS", { sessionMask: maskTokenPreview(cleanToken) });
   return { status: "success", message: "Logout berhasil", backendVersion: BACKEND_VERSION };
+}
+
+// ==================== PURE-JS WEBAUTHN CRYPTO (SHA-256, CBOR, NIST P-256 ECDSA) ====================
+
+function base64UrlToBytes(b64u) {
+  if (!b64u || typeof b64u !== "string") return new Uint8Array(0);
+  let b64 = b64u.trim().replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4 !== 0) b64 += "=";
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lookup = {};
+  for (let i = 0; i < alphabet.length; i++) lookup[alphabet.charAt(i)] = i;
+  const len = b64.length;
+  let pad = 0;
+  if (len >= 2 && b64.charAt(len - 1) === "=") pad++;
+  if (len >= 2 && b64.charAt(len - 2) === "=") pad++;
+  const out = new Uint8Array((len * 3) / 4 - pad);
+  let p = 0;
+  for (let i = 0; i < len; i += 4) {
+    const a = lookup[b64.charAt(i)] || 0;
+    const b = lookup[b64.charAt(i + 1)] || 0;
+    const c = b64.charAt(i + 2) === "=" ? 0 : (lookup[b64.charAt(i + 2)] || 0);
+    const d = b64.charAt(i + 3) === "=" ? 0 : (lookup[b64.charAt(i + 3)] || 0);
+    const trip = (a << 18) | (b << 12) | (c << 6) | d;
+    if (p < out.length) out[p++] = (trip >> 16) & 0xff;
+    if (p < out.length) out[p++] = (trip >> 8) & 0xff;
+    if (p < out.length) out[p++] = trip & 0xff;
+  }
+  return out;
+}
+
+function bytesToBase64Url(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  for (let i = 0; i < arr.length; i += 3) {
+    const b0 = arr[i];
+    const has1 = i + 1 < arr.length;
+    const has2 = i + 2 < arr.length;
+    const b1 = has1 ? arr[i + 1] : 0;
+    const b2 = has2 ? arr[i + 2] : 0;
+    const trip = (b0 << 16) | (b1 << 8) | b2;
+    out += alphabet.charAt((trip >> 18) & 0x3f);
+    out += alphabet.charAt((trip >> 12) & 0x3f);
+    if (has1) out += alphabet.charAt((trip >> 6) & 0x3f);
+    if (has2) out += alphabet.charAt(trip & 0x3f);
+  }
+  return out.replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function stringToUtf8Bytes(str) {
+  const s = String(str || "");
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    let code = s.charCodeAt(i);
+    if (code < 0x80) {
+      out.push(code);
+    } else if (code < 0x800) {
+      out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      const next = s.charCodeAt(++i);
+      const cp = ((code - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+      out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }
+  }
+  return new Uint8Array(out);
+}
+
+function utf8BytesToString(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let out = "";
+  let i = 0;
+  while (i < arr.length) {
+    const b0 = arr[i++];
+    if (b0 < 0x80) {
+      out += String.fromCharCode(b0);
+    } else if ((b0 & 0xe0) === 0xc0 && i < arr.length) {
+      out += String.fromCharCode(((b0 & 0x1f) << 6) | (arr[i++] & 0x3f));
+    } else if ((b0 & 0xf0) === 0xe0 && i + 1 < arr.length) {
+      out += String.fromCharCode(((b0 & 0x0f) << 12) | ((arr[i++] & 0x3f) << 6) | (arr[i++] & 0x3f));
+    } else if ((b0 & 0xf8) === 0xf0 && i + 2 < arr.length) {
+      const cp = (((b0 & 0x07) << 18) | ((arr[i++] & 0x3f) << 12) | ((arr[i++] & 0x3f) << 6) | (arr[i++] & 0x3f)) - 0x10000;
+      out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+    }
+  }
+  return out;
+}
+
+const SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
+function sha256Uint8(inputBytes) {
+  const src = inputBytes instanceof Uint8Array ? inputBytes : new Uint8Array(inputBytes || []);
+  const bitLenHi = Math.floor((src.length * 8) / 0x100000000);
+  const bitLenLo = (src.length * 8) >>> 0;
+  const paddedLen = Math.ceil((src.length + 9) / 64) * 64;
+  const buf = new Uint8Array(paddedLen);
+  buf.set(src, 0);
+  buf[src.length] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(paddedLen - 8, bitLenHi, false);
+  dv.setUint32(paddedLen - 4, bitLenLo, false);
+
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const w = new Int32Array(64);
+  const rotr = function(x, n) { return (x >>> n) | (x << (32 - n)); };
+
+  for (let off = 0; off < paddedLen; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getInt32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ ((~e) & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + temp1) | 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+    h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+  }
+
+  const out = new Uint8Array(32);
+  const outDv = new DataView(out.buffer);
+  outDv.setUint32(0, h0, false); outDv.setUint32(4, h1, false);
+  outDv.setUint32(8, h2, false); outDv.setUint32(12, h3, false);
+  outDv.setUint32(16, h4, false); outDv.setUint32(20, h5, false);
+  outDv.setUint32(24, h6, false); outDv.setUint32(28, h7, false);
+  return out;
+}
+
+function bytesEqualConstTime(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= (a[i] ^ b[i]);
+  return diff === 0;
+}
+
+function decodeCborValue(bytes, startOffset) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let off = startOffset || 0;
+  if (off >= arr.length) throw new Error("CBOR unexpected EOF");
+
+  const initial = arr[off++];
+  const major = initial >> 5;
+  const addInfo = initial & 0x1f;
+
+  function readLen(ai) {
+    if (ai < 24) return ai;
+    if (ai === 24) {
+      if (off >= arr.length) throw new Error("CBOR EOF");
+      return arr[off++];
+    }
+    if (ai === 25) {
+      if (off + 2 > arr.length) throw new Error("CBOR EOF");
+      const v = (arr[off] << 8) | arr[off + 1];
+      off += 2;
+      return v;
+    }
+    if (ai === 26) {
+      if (off + 4 > arr.length) throw new Error("CBOR EOF");
+      const v = ((arr[off] << 24) >>> 0) + (arr[off + 1] << 16) + (arr[off + 2] << 8) + arr[off + 3];
+      off += 4;
+      return v;
+    }
+    throw new Error("CBOR unsupported length ai=" + ai);
+  }
+
+  if (major === 0) {
+    return { value: readLen(addInfo), nextOffset: off };
+  }
+  if (major === 1) {
+    return { value: -1 - readLen(addInfo), nextOffset: off };
+  }
+  if (major === 2) {
+    const len = readLen(addInfo);
+    if (off + len > arr.length) throw new Error("CBOR bytes EOF");
+    const slice = arr.slice(off, off + len);
+    off += len;
+    return { value: slice, nextOffset: off };
+  }
+  if (major === 3) {
+    const len = readLen(addInfo);
+    if (off + len > arr.length) throw new Error("CBOR text EOF");
+    const slice = arr.slice(off, off + len);
+    off += len;
+    return { value: utf8BytesToString(slice), nextOffset: off };
+  }
+  if (major === 4) {
+    const len = readLen(addInfo);
+    const outArr = [];
+    for (let i = 0; i < len; i++) {
+      const item = decodeCborValue(arr, off);
+      outArr.push(item.value);
+      off = item.nextOffset;
+    }
+    return { value: outArr, nextOffset: off };
+  }
+  if (major === 5) {
+    const len = readLen(addInfo);
+    const obj = {};
+    for (let i = 0; i < len; i++) {
+      const kRes = decodeCborValue(arr, off);
+      off = kRes.nextOffset;
+      const vRes = decodeCborValue(arr, off);
+      off = vRes.nextOffset;
+      obj[String(kRes.value)] = vRes.value;
+    }
+    return { value: obj, nextOffset: off };
+  }
+  if (major === 7) {
+    if (addInfo === 20) return { value: false, nextOffset: off };
+    if (addInfo === 21) return { value: true, nextOffset: off };
+    if (addInfo === 22) return { value: null, nextOffset: off };
+    if (addInfo === 23) return { value: undefined, nextOffset: off };
+  }
+  throw new Error("CBOR unsupported major type " + major);
+}
+
+// NIST P-256 (secp256r1) curve parameters & Jacobian BigInt verifier
+const P256_P = BigInt("0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff");
+const P256_B = BigInt("0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b");
+const P256_N = BigInt("0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+const P256_GX = BigInt("0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296");
+const P256_GY = BigInt("0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5");
+const BIG_0 = BigInt(0);
+const BIG_1 = BigInt(1);
+const BIG_2 = BigInt(2);
+const BIG_3 = BigInt(3);
+const BIG_4 = BigInt(4);
+const BIG_8 = BigInt(8);
+
+function bigMod(a, m) {
+  const r = a % m;
+  return r >= BIG_0 ? r : r + m;
+}
+
+function bigModInv(a, m) {
+  let t = BIG_0, newT = BIG_1;
+  let r = m, newR = bigMod(a, m);
+  while (newR !== BIG_0) {
+    const q = r / newR;
+    const tmpT = t - q * newT;
+    t = newT; newT = tmpT;
+    const tmpR = r - q * newR;
+    r = newR; newR = tmpR;
+  }
+  if (r !== BIG_1) throw new Error("Non-invertible BigInt");
+  return t < BIG_0 ? t + m : t;
+}
+
+function bytesToBigIntBE(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let hex = "0x";
+  for (let i = 0; i < arr.length; i++) {
+    hex += ("0" + arr[i].toString(16)).slice(-2);
+  }
+  return hex === "0x" ? BIG_0 : BigInt(hex);
+}
+
+function p256IsOnCurve(x, y) {
+  if (x <= BIG_0 || x >= P256_P || y <= BIG_0 || y >= P256_P) return false;
+  const lhs = bigMod(y * y, P256_P);
+  const rhs = bigMod(x * x * x - BIG_3 * x + P256_B, P256_P);
+  return lhs === rhs;
+}
+
+function p256JacDouble(pt) {
+  if (!pt || pt[2] === BIG_0 || pt[1] === BIG_0) return [BIG_0, BIG_1, BIG_0];
+  const X1 = pt[0], Y1 = pt[1], Z1 = pt[2];
+  const Z1sq = bigMod(Z1 * Z1, P256_P);
+  const M = bigMod(BIG_3 * (X1 - Z1sq) * (X1 + Z1sq), P256_P); // a = -3 optimization
+  const Y1sq = bigMod(Y1 * Y1, P256_P);
+  const S = bigMod(BIG_4 * X1 * Y1sq, P256_P);
+  const X3 = bigMod(M * M - BIG_2 * S, P256_P);
+  const Y1_4 = bigMod(Y1sq * Y1sq, P256_P);
+  const Y3 = bigMod(M * (S - X3) - BIG_8 * Y1_4, P256_P);
+  const Z3 = bigMod(BIG_2 * Y1 * Z1, P256_P);
+  return [X3, Y3, Z3];
+}
+
+function p256JacAdd(p1, p2) {
+  if (p1[2] === BIG_0) return p2;
+  if (p2[2] === BIG_0) return p1;
+  const X1 = p1[0], Y1 = p1[1], Z1 = p1[2];
+  const X2 = p2[0], Y2 = p2[1], Z2 = p2[2];
+  const Z1sq = bigMod(Z1 * Z1, P256_P);
+  const Z2sq = bigMod(Z2 * Z2, P256_P);
+  const U1 = bigMod(X1 * Z2sq, P256_P);
+  const U2 = bigMod(X2 * Z1sq, P256_P);
+  const S1 = bigMod(Y1 * Z2 * Z2sq, P256_P);
+  const S2 = bigMod(Y2 * Z1 * Z1sq, P256_P);
+  if (U1 === U2) {
+    if (S1 !== S2) return [BIG_0, BIG_1, BIG_0];
+    return p256JacDouble(p1);
+  }
+  const H = bigMod(U2 - U1, P256_P);
+  const R = bigMod(S2 - S1, P256_P);
+  const Hsq = bigMod(H * H, P256_P);
+  const Hcu = bigMod(H * Hsq, P256_P);
+  const U1Hsq = bigMod(U1 * Hsq, P256_P);
+  const X3 = bigMod(R * R - Hcu - BIG_2 * U1Hsq, P256_P);
+  const Y3 = bigMod(R * (U1Hsq - X3) - S1 * Hcu, P256_P);
+  const Z3 = bigMod(H * Z1 * Z2, P256_P);
+  return [X3, Y3, Z3];
+}
+
+function p256ScalarMul(k, ax, ay) {
+  let acc = [BIG_0, BIG_1, BIG_0];
+  let cur = [ax, ay, BIG_1];
+  let rem = k;
+  while (rem > BIG_0) {
+    if ((rem & BIG_1) === BIG_1) acc = p256JacAdd(acc, cur);
+    cur = p256JacDouble(cur);
+    rem = rem >> BIG_1;
+  }
+  return acc;
+}
+
+function parseEcdsaSigRS(sigBytes) {
+  const s = sigBytes instanceof Uint8Array ? sigBytes : new Uint8Array(sigBytes || []);
+  if (s.length === 64 && s[0] !== 0x30) {
+    return { r: bytesToBigIntBE(s.slice(0, 32)), s: bytesToBigIntBE(s.slice(32, 64)) };
+  }
+  if (s.length < 8 || s[0] !== 0x30) throw new Error("Invalid DER signature header");
+  let idx = 2;
+  if ((s[1] & 0x80) !== 0) idx = 2 + (s[1] & 0x7f);
+  if (s[idx] !== 0x02) throw new Error("Invalid DER R marker");
+  const rLen = s[idx + 1];
+  const rBytes = s.slice(idx + 2, idx + 2 + rLen);
+  idx += 2 + rLen;
+  if (s[idx] !== 0x02) throw new Error("Invalid DER S marker");
+  const sLen = s[idx + 1];
+  const sBytes = s.slice(idx + 2, idx + 2 + sLen);
+  return { r: bytesToBigIntBE(rBytes), s: bytesToBigIntBE(sBytes) };
+}
+
+function extractP256XYFromKeyBytes(keyBytes) {
+  const bytes = keyBytes instanceof Uint8Array ? keyBytes : base64UrlToBytes(String(keyBytes || ""));
+  if (bytes.length === 65 && bytes[0] === 0x04) {
+    const x = bytesToBigIntBE(bytes.slice(1, 33));
+    const y = bytesToBigIntBE(bytes.slice(33, 65));
+    if (!p256IsOnCurve(x, y)) throw new Error("Raw EC point not on P-256 curve");
+    return { x: x, y: y };
+  }
+  // SPKI SubjectPublicKeyInfo (starts with 0x30, uncompressed EC point in last 65 bytes 0x04||x||y)
+  if (bytes.length >= 91 && bytes[0] === 0x30 && bytes[bytes.length - 65] === 0x04) {
+    const x = bytesToBigIntBE(bytes.slice(bytes.length - 64, bytes.length - 32));
+    const y = bytesToBigIntBE(bytes.slice(bytes.length - 32));
+    if (!p256IsOnCurve(x, y)) throw new Error("SPKI EC point not on P-256 curve");
+    return { x: x, y: y };
+  }
+  // COSE EC2 Key: { 1: 2 (EC2), 3: -7 (ES256), -1: 1 (P-256), -2: x(32B), -3: y(32B) }
+  const decoded = decodeCborValue(bytes, 0).value;
+  if (!decoded || typeof decoded !== "object") throw new Error("Invalid COSE key");
+  const kty = Number(decoded["1"]);
+  const alg = Number(decoded["3"]);
+  const crv = Number(decoded["-1"]);
+  if (kty !== 2 || crv !== 1 || (alg !== -7 && !isNaN(alg))) {
+    throw new Error("Unsupported COSE algorithm (wajib ECDSA P-256 ES256)");
+  }
+  const xb = decoded["-2"];
+  const yb = decoded["-3"];
+  if (!xb || !yb || xb.length !== 32 || yb.length !== 32) {
+    throw new Error("Invalid COSE EC2 P-256 coordinates");
+  }
+  const x = bytesToBigIntBE(xb);
+  const y = bytesToBigIntBE(yb);
+  if (!p256IsOnCurve(x, y)) throw new Error("COSE EC point not on P-256 curve");
+  return { x: x, y: y };
+}
+
+function spkiToCoseP256Base64Url(spkiOrCoseBytes) {
+  const bytes = spkiOrCoseBytes instanceof Uint8Array ? spkiOrCoseBytes : base64UrlToBytes(String(spkiOrCoseBytes || ""));
+  const xy = extractP256XYFromKeyBytes(bytes);
+  // If already valid COSE map, normalize/keep Base64URL
+  if (bytes.length > 0 && (bytes[0] >> 5) === 5) {
+    return bytesToBase64Url(bytes);
+  }
+  const hexTo32Bytes = function(bi) {
+    let h = bi.toString(16);
+    while (h.length < 64) h = "0" + h;
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  };
+  const xBytes = hexTo32Bytes(xy.x);
+  const yBytes = hexTo32Bytes(xy.y);
+  // Deterministic minimal CBOR map: { 1: 2, 3: -7, -1: 1, -2: bstr(32), -3: bstr(32) }
+  const out = new Uint8Array(77);
+  let p = 0;
+  out[p++] = 0xa5; // map(5)
+  out[p++] = 0x01; out[p++] = 0x02; // 1: 2
+  out[p++] = 0x03; out[p++] = 0x26; // 3: -7
+  out[p++] = 0x20; out[p++] = 0x01; // -1: 1
+  out[p++] = 0x21; out[p++] = 0x58; out[p++] = 0x20; // -2: bstr(32)
+  out.set(xBytes, p); p += 32;
+  out[p++] = 0x22; out[p++] = 0x58; out[p++] = 0x20; // -3: bstr(32)
+  out.set(yBytes, p);
+  return bytesToBase64Url(out);
+}
+
+function verifyWebAuthnEcdsaP256(publicKeyBase64Url, signedBytes, signatureBytes) {
+  try {
+    const xy = extractP256XYFromKeyBytes(base64UrlToBytes(publicKeyBase64Url));
+    const rs = parseEcdsaSigRS(signatureBytes);
+    if (rs.r <= BIG_0 || rs.r >= P256_N || rs.s <= BIG_0 || rs.s >= P256_N) return false;
+    const digest = sha256Uint8(signedBytes);
+    const z = bigMod(bytesToBigIntBE(digest), P256_N);
+    const w = bigModInv(rs.s, P256_N);
+    const u1 = bigMod(z * w, P256_N);
+    const u2 = bigMod(rs.r * w, P256_N);
+    const p1 = p256ScalarMul(u1, P256_GX, P256_GY);
+    const p2 = p256ScalarMul(u2, xy.x, xy.y);
+    const sum = p256JacAdd(p1, p2);
+    if (sum[2] === BIG_0) return false;
+    const zInv = bigModInv(sum[2], P256_P);
+    const zInv2 = bigMod(zInv * zInv, P256_P);
+    const affineX = bigMod(sum[0] * zInv2, P256_P);
+    return bigMod(affineX, P256_N) === rs.r;
+  } catch (e) {
+    return false;
+  }
+}
+
+function isAllowedWebAuthnOrigin(origin, rpId) {
+  if (!origin || typeof origin !== "string" || !rpId || typeof rpId !== "string") return false;
+  const cleanOrigin = origin.trim().replace(/\/+$/, "");
+  const cleanRpId = rpId.trim().toLowerCase();
+  const m = cleanOrigin.match(/^(https?):\/\/([^/:]+)(?::\d+)?$/i);
+  if (!m) return false;
+  const scheme = m[1].toLowerCase();
+  const host = m[2].toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1";
+  if (scheme !== "https" && !isLocal) return false;
+  if (host !== cleanRpId && host.slice(-(cleanRpId.length + 1)) !== ("." + cleanRpId)) {
+    return false;
+  }
+
+  // Default trusted hostnames
+  if (
+    host === "absen-jnt.vercel.app" ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.slice(-11) === ".vercel.app" ||
+    host.slice(-8) === ".run.app"
+  ) {
+    return true;
+  }
+
+  // Optional custom origins from Settings!A12:B12 or Script Properties WEBAUTHN_ALLOWED_ORIGINS
+  let extraStr = "";
+  try {
+    const sSheet = getSpreadsheet().getSheetByName("Settings");
+    if (sSheet) {
+      const a12 = String(sSheet.getRange("A12").getValue() || "").trim().toLowerCase();
+      const b12 = String(sSheet.getRange("B12").getValue() || "").trim();
+      if (b12 && (a12 === "webauthn_allowed_origins" || a12 === "")) {
+        extraStr += "," + b12;
+      }
+    }
+  } catch (e) {}
+  try {
+    const p = PropertiesService.getScriptProperties().getProperty("WEBAUTHN_ALLOWED_ORIGINS");
+    if (p) extraStr += "," + p;
+  } catch (e) {}
+
+  const list = extraStr.split(/[\s,;]+/).map(function(x) { return x.trim().toLowerCase().replace(/\/+$/, ""); }).filter(Boolean);
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] === cleanOrigin.toLowerCase() || list[i] === host || list[i] === cleanRpId) return true;
+  }
+  return false;
+}
+
+function parseAssertionAuthenticatorData(authDataBytes) {
+  if (!authDataBytes || authDataBytes.length < 37) {
+    throw new Error("authenticatorData tidak valid (< 37 bytes)");
+  }
+  const rpIdHash = authDataBytes.slice(0, 32);
+  const flags = authDataBytes[32];
+  const signCount = ((authDataBytes[33] << 24) >>> 0) + (authDataBytes[34] << 16) + (authDataBytes[35] << 8) + authDataBytes[36];
+  return {
+    rpIdHash: rpIdHash,
+    flags: flags,
+    userPresent: (flags & 0x01) !== 0,
+    userVerified: (flags & 0x04) !== 0,
+    signCount: signCount
+  };
+}
+
+function parseAttestedCredentialFromAuthData(authDataBytes) {
+  const base = parseAssertionAuthenticatorData(authDataBytes);
+  if ((base.flags & 0x40) === 0 || authDataBytes.length < 55) {
+    throw new Error("authenticatorData tidak memiliki attestedCredentialData");
+  }
+  const credLen = (authDataBytes[53] << 8) | authDataBytes[54];
+  if (55 + credLen >= authDataBytes.length) {
+    throw new Error("Panjang credentialId WebAuthn tidak valid");
+  }
+  const credIdBytes = authDataBytes.slice(55, 55 + credLen);
+  const coseKeyBytes = authDataBytes.slice(55 + credLen);
+  return {
+    rpIdHash: base.rpIdHash,
+    flags: base.flags,
+    userPresent: base.userPresent,
+    signCount: base.signCount,
+    credentialId: bytesToBase64Url(credIdBytes),
+    cosePublicKeyBytes: coseKeyBytes
+  };
+}
+
+// ==================== WEBAUTHN ENDPOINTS (FINGERPRINT / FACE ID) ====================
+
+function getWebAuthnRegisterChallenge(data, employeeToken) {
+  const chk = checkEmployeeToken(employeeToken);
+  if (!chk.ok) {
+    logAudit("getWebAuthnRegisterChallenge", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: chk.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, chk.idPegawai || chk.nama);
+  if (!lookup.ok) {
+    return { status: "error", message: "Akun pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+  const emp = lookup.employee;
+
+  const rpId = (data && data.rpId && /^[a-z0-9.-]+$/i.test(String(data.rpId)))
+    ? String(data.rpId).trim().toLowerCase()
+    : "absen-jnt.vercel.app";
+
+  const seed = sha256Uint8(stringToUtf8Bytes(Utilities.getUuid() + "|" + Date.now() + "|" + emp.nama));
+  const challenge = bytesToBase64Url(seed);
+
+  const challengeObj = {
+    challenge: challenge,
+    rpId: rpId,
+    idPegawai: emp.idPegawai || "",
+    nama: emp.nama,
+    expiresAt: new Date().getTime() + 5 * 60 * 1000
+  };
+  try {
+    CacheService.getScriptCache().put("webauthn_challenge_" + String(employeeToken).trim(), JSON.stringify(challengeObj), 300);
+  } catch (e) {
+    return { status: "error", message: "Gagal membuat challenge registrasi WebAuthn.", backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("getWebAuthnRegisterChallenge", emp.nama, "", "", "SUCCESS", { method: "webauthn", rpId: rpId, idPegawai: emp.idPegawai || "-" });
+
+  return {
+    status: "success",
+    challenge: challenge,
+    rpName: "J&T Absensi",
+    rpId: rpId,
+    userId: emp.idPegawai || emp.nama,
+    userName: emp.nama,
+    excludeCredentials: (emp.webAuthnDevices || []).map(function(d) {
+      return { id: d.credentialId, type: "public-key" };
+    }),
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function registerWebAuthnCredential(data, employeeToken) {
+  const chk = checkEmployeeToken(employeeToken);
+  if (!chk.ok) {
+    logAudit("registerWebAuthnCredential", "anonymous", "", "", "FAILED", { reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: chk.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const cleanToken = String(employeeToken || "").trim();
+  const cacheKey = "webauthn_challenge_" + cleanToken;
+  let storedChallenge = null;
+  try {
+    const raw = CacheService.getScriptCache().get(cacheKey);
+    if (raw) storedChallenge = JSON.parse(raw);
+    CacheService.getScriptCache().remove(cacheKey);
+  } catch (e) {}
+
+  if (!storedChallenge || !storedChallenge.challenge || (storedChallenge.expiresAt && storedChallenge.expiresAt < new Date().getTime())) {
+    logAudit("registerWebAuthnCredential", chk.nama, "", "", "FAILED", { method: "webauthn", reason: "challenge_expired_or_missing" });
+    return { status: "error", message: "Sesi pendaftaran biometric kadaluwarsa. Silakan coba lagi.", backendVersion: BACKEND_VERSION };
+  }
+
+  const credentialId = data && data.credentialId ? String(data.credentialId).trim() : "";
+  const clientDataB64 = data && data.clientDataJSON ? String(data.clientDataJSON).trim() : "";
+  const attestationB64 = data && data.attestationObject ? String(data.attestationObject).trim() : "";
+  const authenticatorDataB64 = data && data.authenticatorData ? String(data.authenticatorData).trim() : "";
+  const publicKeyB64 = data && data.publicKey ? String(data.publicKey).trim() : "";
+  const deviceName = data && data.deviceName ? String(data.deviceName).trim().slice(0, 80) : "Perangkat Biometric";
+
+  if (!credentialId || !clientDataB64) {
+    return { status: "error", message: "Data kredensial WebAuthn tidak lengkap.", backendVersion: BACKEND_VERSION };
+  }
+
+  let clientData = null;
+  try {
+    clientData = JSON.parse(utf8BytesToString(base64UrlToBytes(clientDataB64)));
+  } catch (e) {
+    return { status: "error", message: "Format clientDataJSON tidak valid.", backendVersion: BACKEND_VERSION };
+  }
+
+  if (!clientData || clientData.type !== "webauthn.create" || clientData.challenge !== storedChallenge.challenge) {
+    logAudit("registerWebAuthnCredential", chk.nama, "", "", "FAILED", { method: "webauthn", reason: "challenge_mismatch" });
+    return { status: "error", message: "Verifikasi challenge pendaftaran biometric gagal.", backendVersion: BACKEND_VERSION };
+  }
+
+  const expectedRpId = storedChallenge.rpId || "absen-jnt.vercel.app";
+  if (!isAllowedWebAuthnOrigin(clientData.origin, expectedRpId)) {
+    logAudit("registerWebAuthnCredential", chk.nama, "", "", "FAILED", { method: "webauthn", reason: "invalid_origin", origin: clientData.origin || "-" });
+    return { status: "error", message: "Origin domain pendaftaran WebAuthn tidak diizinkan (" + (clientData.origin || "-") + ").", backendVersion: BACKEND_VERSION };
+  }
+
+  let normalizedCoseKeyB64 = "";
+  let initialCounter = (data && typeof data.counter === "number" && data.counter >= 0) ? Math.floor(data.counter) : 0;
+
+  try {
+    const expectedRpHash = sha256Uint8(stringToUtf8Bytes(expectedRpId));
+    if (attestationB64) {
+      const attObj = decodeCborValue(base64UrlToBytes(attestationB64), 0).value;
+      if (!attObj || !attObj.authData) throw new Error("attestationObject tidak valid");
+      const parsedAtt = parseAttestedCredentialFromAuthData(attObj.authData);
+      if (!bytesEqualConstTime(parsedAtt.rpIdHash, expectedRpHash)) {
+        throw new Error("rpIdHash pada attestation tidak cocok");
+      }
+      if (!parsedAtt.userPresent) {
+        throw new Error("Flag User Present tidak aktif");
+      }
+      if (parsedAtt.credentialId !== credentialId) {
+        throw new Error("credentialId attestation tidak cocok");
+      }
+      normalizedCoseKeyB64 = spkiToCoseP256Base64Url(parsedAtt.cosePublicKeyBytes);
+      initialCounter = parsedAtt.signCount;
+    } else {
+      if (!publicKeyB64) throw new Error("Public key atau attestationObject wajib disertakan");
+      if (authenticatorDataB64) {
+        const parsedAuth = parseAssertionAuthenticatorData(base64UrlToBytes(authenticatorDataB64));
+        if (!bytesEqualConstTime(parsedAuth.rpIdHash, expectedRpHash)) {
+          throw new Error("rpIdHash tidak cocok");
+        }
+        if (!parsedAuth.userPresent) throw new Error("Flag User Present tidak aktif");
+        initialCounter = parsedAuth.signCount;
+      }
+      normalizedCoseKeyB64 = spkiToCoseP256Base64Url(base64UrlToBytes(publicKeyB64));
+    }
+  } catch (err) {
+    logAudit("registerWebAuthnCredential", chk.nama, "", "", "FAILED", { method: "webauthn", reason: "attestation_invalid" });
+    return { status: "error", message: "Attestation atau kunci publik P-256 tidak valid: " + (err.message || err), backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, chk.idPegawai || chk.nama);
+  if (!lookup.ok) {
+    return { status: "error", message: "Akun pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  const nowIso = getJakartaIsoTimestampStr();
+  const existing = (emp.webAuthnDevices || []).filter(function(d) { return d.credentialId !== credentialId; });
+  if (existing.length >= 5) {
+    return { status: "error", message: "Maksimal 5 perangkat biometric per pegawai. Hapus perangkat lama terlebih dahulu.", backendVersion: BACKEND_VERSION };
+  }
+
+  existing.push({
+    credentialId: credentialId,
+    publicKey: normalizedCoseKeyB64,
+    counter: initialCounter,
+    registeredAt: nowIso,
+    lastUsedAt: nowIso,
+    deviceName: deviceName
+  });
+
+  writeWebAuthnDevicesToRow(lookup.sheet, emp.rowIndex, existing);
+
+  logAudit("registerWebAuthnCredential", emp.nama, "", "", "SUCCESS", {
+    method: "webauthn",
+    employeeId: emp.idPegawai || "-",
+    deviceName: deviceName,
+    deviceCount: existing.length,
+    timestamp: nowIso
+  });
+
+  return {
+    status: "success",
+    message: "Biometric berhasil didaftarkan",
+    devices: formatPublicWebAuthnDevices(existing),
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function getWebAuthnLoginChallenge(data) {
+  const identifier = (data && (data.identifier || data.idPegawai || data.nama)) ? String(data.identifier || data.idPegawai || data.nama).trim() : "";
+  const deviceId = (data && data.deviceId) ? String(data.deviceId).slice(0, 80) : (_currentRequestMeta.deviceId || "emp_client");
+  const userAgent = (data && data.userAgent) ? String(data.userAgent).slice(0, 160) : (_currentRequestMeta.userAgent || "Browser");
+
+  const rl = checkRateLimit(deviceId, "webauthnChallenge", 20, 15);
+  if (!rl.allowed) {
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Terlalu banyak permintaan biometric. Gunakan PIN atau coba lagi nanti.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  if (!identifier) {
+    return { status: "error", message: "Masukkan Nama atau ID Pegawai terlebih dahulu.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    logAudit("getWebAuthnLoginChallenge", identifier, deviceId, userAgent, "FAILED", { method: "webauthn", reason: lookup.reason });
+    if (lookup.reason === "ambiguous_name") {
+      return {
+        status: "error",
+        ambiguousName: true,
+        message: "Terdapat nama pegawai yang sama. Gunakan ID Pegawai Anda.",
+        backendVersion: BACKEND_VERSION
+      };
+    }
+    return { status: "error", message: "Pegawai aktif tidak ditemukan atau belum mendaftarkan biometric.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  if (!emp.webAuthnDevices || emp.webAuthnDevices.length === 0) {
+    return {
+      status: "error",
+      biometricNotRegistered: true,
+      message: "Perangkat biometric belum terdaftar untuk akun ini. Silakan login menggunakan PIN.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  const rpId = (data && data.rpId && /^[a-z0-9.-]+$/i.test(String(data.rpId)))
+    ? String(data.rpId).trim().toLowerCase()
+    : "absen-jnt.vercel.app";
+
+  const seed = sha256Uint8(stringToUtf8Bytes(Utilities.getUuid() + "|" + Date.now() + "|" + emp.nama + "|login"));
+  const challenge = bytesToBase64Url(seed);
+
+  const challengeRec = {
+    challenge: challenge,
+    rpId: rpId,
+    idPegawai: emp.idPegawai || "",
+    nama: emp.nama,
+    expiresAt: new Date().getTime() + 5 * 60 * 1000
+  };
+  try {
+    CacheService.getScriptCache().put("webauthn_login_" + challenge, JSON.stringify(challengeRec), 300);
+  } catch (e) {
+    return { status: "error", message: "Gagal membuat challenge login biometric.", backendVersion: BACKEND_VERSION };
+  }
+
+  return {
+    status: "success",
+    challenge: challenge,
+    rpId: rpId,
+    allowCredentials: emp.webAuthnDevices.map(function(d) {
+      return { id: d.credentialId, type: "public-key" };
+    }),
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function loginWebAuthn(data) {
+  const identifier = (data && (data.identifier || data.idPegawai || data.nama)) ? String(data.identifier || data.idPegawai || data.nama).trim() : "";
+  const deviceId = (data && data.deviceId) ? String(data.deviceId).slice(0, 80) : (_currentRequestMeta.deviceId || "emp_client");
+  const userAgent = (data && data.userAgent) ? String(data.userAgent).slice(0, 160) : (_currentRequestMeta.userAgent || "Browser");
+
+  const rl = checkRateLimit(deviceId, "loginWebAuthn", 10, 15);
+  if (!rl.allowed) {
+    logAudit("loginWebAuthn", identifier || "anonymous", deviceId, userAgent, "FAILED", {
+      method: "webauthn",
+      success: false,
+      deviceId: deviceId,
+      reason: "rate_limit",
+      retryAfterSeconds: rl.retryAfterSeconds
+    });
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Terlalu banyak percobaan biometric. Silakan login menggunakan PIN.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  const credentialId = data && data.credentialId ? String(data.credentialId).trim() : "";
+  const authDataB64 = data && data.authenticatorData ? String(data.authenticatorData).trim() : "";
+  const clientDataB64 = data && data.clientDataJSON ? String(data.clientDataJSON).trim() : "";
+  const signatureB64 = data && data.signature ? String(data.signature).trim() : "";
+
+  if (!identifier || !credentialId || !authDataB64 || !clientDataB64 || !signatureB64) {
+    logAudit("loginWebAuthn", identifier || "anonymous", deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "missing_assertion_fields" });
+    return { status: "error", message: "Biometric gagal, silakan gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  let clientData = null;
+  try {
+    clientData = JSON.parse(utf8BytesToString(base64UrlToBytes(clientDataB64)));
+  } catch (e) {
+    return { status: "error", message: "Biometric gagal (clientDataJSON tidak valid), silakan gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  if (!clientData || clientData.type !== "webauthn.get" || !clientData.challenge) {
+    return { status: "error", message: "Biometric gagal, silakan gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  const cacheKey = "webauthn_login_" + String(clientData.challenge).trim();
+  let storedChallenge = null;
+  try {
+    const raw = CacheService.getScriptCache().get(cacheKey);
+    if (raw) storedChallenge = JSON.parse(raw);
+    CacheService.getScriptCache().remove(cacheKey);
+  } catch (e) {}
+
+  if (!storedChallenge || storedChallenge.challenge !== clientData.challenge || (storedChallenge.expiresAt && storedChallenge.expiresAt < new Date().getTime())) {
+    logAudit("loginWebAuthn", identifier, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "challenge_invalid_or_expired" });
+    return { status: "error", message: "Challenge biometric tidak valid atau kadaluwarsa. Coba lagi atau gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  const expectedRpId = storedChallenge.rpId || "absen-jnt.vercel.app";
+  if (!isAllowedWebAuthnOrigin(clientData.origin, expectedRpId)) {
+    logAudit("loginWebAuthn", identifier, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "origin_not_allowed" });
+    return { status: "error", message: "Origin domain WebAuthn tidak diizinkan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    logAudit("loginWebAuthn", identifier, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: lookup.reason });
+    return { status: "error", message: "Pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  if (normalizeTextKey(emp.nama) !== normalizeTextKey(storedChallenge.nama)) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "challenge_identity_mismatch" });
+    return { status: "error", message: "Identitas challenge tidak sesuai.", backendVersion: BACKEND_VERSION };
+  }
+
+  const devices = emp.webAuthnDevices || [];
+  let devIdx = -1;
+  for (let i = 0; i < devices.length; i++) {
+    if (devices[i].credentialId === credentialId) {
+      devIdx = i;
+      break;
+    }
+  }
+  if (devIdx === -1) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "credential_not_found" });
+    return { status: "error", message: "Perangkat biometric belum terdaftar untuk akun ini. Silakan gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  const targetDev = devices[devIdx];
+  const authDataBytes = base64UrlToBytes(authDataB64);
+  let parsedAuth = null;
+  try {
+    parsedAuth = parseAssertionAuthenticatorData(authDataBytes);
+  } catch (e) {
+    return { status: "error", message: "authenticatorData tidak valid.", backendVersion: BACKEND_VERSION };
+  }
+
+  const expectedRpHash = sha256Uint8(stringToUtf8Bytes(expectedRpId));
+  if (!bytesEqualConstTime(parsedAuth.rpIdHash, expectedRpHash)) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "rpid_hash_mismatch" });
+    return { status: "error", message: "Verifikasi RP ID WebAuthn gagal.", backendVersion: BACKEND_VERSION };
+  }
+  if (!parsedAuth.userPresent) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "up_flag_missing" });
+    return { status: "error", message: "Konfirmasi kehadiran pengguna biometric tidak valid.", backendVersion: BACKEND_VERSION };
+  }
+
+  const clientDataBytes = base64UrlToBytes(clientDataB64);
+  const clientDataHash = sha256Uint8(clientDataBytes);
+  const signedBytes = new Uint8Array(authDataBytes.length + clientDataHash.length);
+  signedBytes.set(authDataBytes, 0);
+  signedBytes.set(clientDataHash, authDataBytes.length);
+
+  const signatureBytes = base64UrlToBytes(signatureB64);
+  if (!verifyWebAuthnEcdsaP256(targetDev.publicKey, signedBytes, signatureBytes)) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "invalid_signature", idPegawai: emp.idPegawai || "-" });
+    return { status: "error", message: "Verifikasi tanda tangan biometric gagal, silakan gunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  const storedCounter = Number(targetDev.counter) || 0;
+  const incomingSignCount = Number(parsedAuth.signCount) || 0;
+  if (data && data.counter !== undefined && data.counter !== null && Number(data.counter) !== incomingSignCount) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "counter_payload_mismatch" });
+    return { status: "error", message: "Counter biometric tidak konsisten (anti-replay).", backendVersion: BACKEND_VERSION };
+  }
+  if (storedCounter > 0 && incomingSignCount <= storedCounter) {
+    logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "FAILED", { method: "webauthn", success: false, deviceId: deviceId, reason: "counter_replay", storedCounter: storedCounter, incomingSignCount: incomingSignCount });
+    return { status: "error", message: "Replay biometric terdeteksi (counter tidak valid). Silakan login menggunakan PIN.", backendVersion: BACKEND_VERSION };
+  }
+
+  const nowIso = getJakartaIsoTimestampStr();
+  devices[devIdx].counter = incomingSignCount;
+  devices[devIdx].lastUsedAt = nowIso;
+  writeWebAuthnDevicesToRow(lookup.sheet, emp.rowIndex, devices);
+  try { lookup.sheet.getRange(emp.rowIndex, 13).setValue(nowIso); } catch (e) {}
+
+  emp.webAuthnDevices = devices;
+  emp.hasWebAuthn = true;
+
+  const issued = issueEmployeeSession(ss, emp, deviceId, userAgent, "webauthn");
+  if (!issued.ok) {
+    return { status: "error", message: issued.message, backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("loginWebAuthn", emp.nama, deviceId, userAgent, "SUCCESS", {
+    method: "webauthn",
+    success: true,
+    deviceId: deviceId,
+    deviceName: targetDev.deviceName || "-",
+    idPegawai: emp.idPegawai || "-",
+    timestamp: nowIso
+  });
+  return issued.response;
+}
+
+function getWebAuthnDevices(data, authTokens) {
+  const tokens = (authTokens && typeof authTokens === "object") ? authTokens : {};
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+  if (!ownerCheck.ok && !empCheck.ok) {
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const identifier = ownerCheck.ok
+    ? String((data && (data.idPegawai || data.nama || data.identifier)) || "").trim()
+    : (empCheck.idPegawai || empCheck.nama);
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    return { status: "error", message: "Pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  return {
+    status: "success",
+    devices: formatPublicWebAuthnDevices(lookup.employee.webAuthnDevices),
+    hasFaceDescriptor: !!lookup.employee.hasFaceDescriptor,
+    faceRegisteredAt: lookup.employee.sidikWajah || "",
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function revokeWebAuthnDevice(data, authTokens) {
+  const tokens = (authTokens && typeof authTokens === "object") ? authTokens : {};
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+  if (!ownerCheck.ok && !empCheck.ok) {
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const identifier = ownerCheck.ok
+    ? String((data && (data.idPegawai || data.nama || data.identifier)) || "").trim()
+    : (empCheck.idPegawai || empCheck.nama);
+
+  const credentialId = data && data.credentialId ? String(data.credentialId).trim() : "";
+  const revokeAll = !!(data && data.revokeAll);
+  if (!credentialId && !revokeAll) {
+    return { status: "error", message: "ID perangkat yang akan dihapus wajib diisi.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    return { status: "error", message: "Pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  const before = emp.webAuthnDevices || [];
+  let removedDevName = revokeAll ? "Semua Perangkat" : "-";
+  const after = revokeAll
+    ? []
+    : before.filter(function(d) {
+        if (d.credentialId === credentialId) {
+          removedDevName = d.deviceName || "Perangkat";
+          return false;
+        }
+        return true;
+      });
+
+  if (!revokeAll && after.length === before.length) {
+    return { status: "error", message: "Perangkat biometric tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  writeWebAuthnDevicesToRow(lookup.sheet, emp.rowIndex, after);
+  logAudit("revokeWebAuthnDevice", ownerCheck.ok ? "Owner" : emp.nama, "", "", "SUCCESS", {
+    method: "webauthn",
+    employeeId: emp.idPegawai || "-",
+    nama: emp.nama,
+    deviceName: removedDevName,
+    remainingDevices: after.length,
+    timestamp: getJakartaIsoTimestampStr()
+  });
+
+  return {
+    status: "success",
+    message: revokeAll ? "Semua perangkat biometric berhasil dihapus." : ("Perangkat biometric (" + removedDevName + ") berhasil dihapus."),
+    devices: formatPublicWebAuthnDevices(after),
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+// ==================== FACE RECOGNITION ENDPOINTS ====================
+
+function getConfiguredFaceThreshold(ss) {
+  let threshold = 0.6;
+  try {
+    const sSheet = (ss || getSpreadsheet()).getSheetByName("Settings");
+    if (sSheet) {
+      const a11 = String(sSheet.getRange("A11").getValue() || "").trim().toLowerCase();
+      const b11 = sSheet.getRange("B11").getValue();
+      if (b11 !== "" && b11 !== null && b11 !== undefined && (a11 === "face_recognition_threshold" || a11 === "")) {
+        const parsed = parseFloat(b11);
+        if (isFinite(parsed) && parsed >= 0.3 && parsed <= 0.85) {
+          threshold = parsed;
+        }
+      }
+    }
+  } catch (e) {}
+  return threshold;
+}
+
+function registerFaceDescriptor(data, employeeToken) {
+  const chk = checkEmployeeToken(employeeToken);
+  if (!chk.ok) {
+    logAudit("registerFaceDescriptor", "anonymous", "", "", "FAILED", { method: "face", reason: "unauthorized" });
+    return { status: "error", authRequired: true, message: chk.message, backendVersion: BACKEND_VERSION };
+  }
+
+  const descriptor = parseFaceDescriptorArray(data && data.faceDescriptor);
+  if (!descriptor) {
+    return { status: "error", message: "Face descriptor tidak valid (wajib array 128 angka float).", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, chk.idPegawai || chk.nama);
+  if (!lookup.ok) {
+    return { status: "error", message: "Akun pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  if (emp.hasFaceDescriptor && !(data && data.overwrite === true)) {
+    return { status: "error", needsConfirmOverwrite: true, message: "Profil wajah sudah terdaftar. Konfirmasi untuk memperbarui profil wajah.", backendVersion: BACKEND_VERSION };
+  }
+
+  const nowIso = getJakartaIsoTimestampStr();
+  lookup.sheet.getRange(emp.rowIndex, 9).setValue(nowIso);
+  lookup.sheet.getRange(emp.rowIndex, 10).setValue(JSON.stringify(descriptor));
+
+  logAudit("registerFaceDescriptor", emp.nama, "", "", "SUCCESS", {
+    method: "face",
+    employeeId: emp.idPegawai || "-",
+    deviceName: "Kamera Browser",
+    timestamp: nowIso
+  });
+
+  return {
+    status: "success",
+    message: "Profil wajah berhasil didaftarkan.",
+    faceRegisteredAt: nowIso,
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function deleteFaceDescriptor(data, authTokens) {
+  const tokens = (authTokens && typeof authTokens === "object") ? authTokens : {};
+  const ownerCheck = tokens.ownerToken ? checkOwnerToken(tokens.ownerToken) : { ok: false };
+  const empCheck = (!ownerCheck.ok && tokens.employeeToken) ? checkEmployeeToken(tokens.employeeToken) : { ok: false };
+  if (!ownerCheck.ok && !empCheck.ok) {
+    return { status: "error", authRequired: true, message: "Autentikasi diperlukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const identifier = ownerCheck.ok
+    ? String((data && (data.idPegawai || data.nama || data.identifier)) || "").trim()
+    : (empCheck.idPegawai || empCheck.nama);
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    return { status: "error", message: "Pegawai aktif tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  lookup.sheet.getRange(emp.rowIndex, 9).setValue("");
+  lookup.sheet.getRange(emp.rowIndex, 10).setValue("");
+
+  logAudit("deleteFaceDescriptor", ownerCheck.ok ? "Owner" : emp.nama, "", "", "SUCCESS", {
+    method: "face",
+    employeeId: emp.idPegawai || "-",
+    nama: emp.nama,
+    timestamp: getJakartaIsoTimestampStr()
+  });
+
+  return {
+    status: "success",
+    message: "Profil wajah berhasil dihapus.",
+    backendVersion: BACKEND_VERSION
+  };
+}
+
+function loginFaceRecognition(data) {
+  const identifier = (data && (data.identifier || data.idPegawai || data.nama)) ? String(data.identifier || data.idPegawai || data.nama).trim() : "";
+  const deviceId = (data && data.deviceId) ? String(data.deviceId).slice(0, 80) : (_currentRequestMeta.deviceId || "emp_client");
+  const userAgent = (data && data.userAgent) ? String(data.userAgent).slice(0, 160) : (_currentRequestMeta.userAgent || "Browser");
+
+  const rl = checkRateLimit(deviceId, "loginFaceRecognition", 10, 15);
+  if (!rl.allowed) {
+    logAudit("loginFaceRecognition", identifier || "anonymous", deviceId, userAgent, "FAILED", {
+      method: "face",
+      success: false,
+      deviceId: deviceId,
+      reason: "rate_limit",
+      retryAfterSeconds: rl.retryAfterSeconds
+    });
+    return {
+      status: "error",
+      rateLimited: true,
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: "Terlalu banyak percobaan login wajah. Silakan gunakan PIN.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  const inputDesc = parseFaceDescriptorArray(data && data.faceDescriptor);
+  if (!identifier || !inputDesc) {
+    logAudit("loginFaceRecognition", identifier || "anonymous", deviceId, userAgent, "FAILED", { method: "face", success: false, deviceId: deviceId, reason: "invalid_input" });
+    return { status: "error", message: "Nama / ID Pegawai dan descriptor wajah (128 dimensi) wajib valid.", backendVersion: BACKEND_VERSION };
+  }
+
+  const ss = getSpreadsheet();
+  const lookup = findActiveEmployeeRowForAuth(ss, identifier);
+  if (!lookup.ok) {
+    logAudit("loginFaceRecognition", identifier, deviceId, userAgent, "FAILED", { method: "face", success: false, deviceId: deviceId, reason: lookup.reason });
+    if (lookup.reason === "ambiguous_name") {
+      return {
+        status: "error",
+        ambiguousName: true,
+        message: "Terdapat nama pegawai yang sama. Gunakan ID Pegawai Anda.",
+        backendVersion: BACKEND_VERSION
+      };
+    }
+    return { status: "failed", message: "Wajah tidak cocok atau akun tidak ditemukan.", backendVersion: BACKEND_VERSION };
+  }
+
+  const emp = lookup.employee;
+  if (!emp.faceDescriptor) {
+    logAudit("loginFaceRecognition", emp.nama, deviceId, userAgent, "FAILED", { method: "face", success: false, deviceId: deviceId, reason: "face_not_registered" });
+    return {
+      status: "failed",
+      faceNotRegistered: true,
+      message: "Profil wajah belum terdaftar untuk akun ini. Silakan gunakan PIN.",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  let sqSum = 0;
+  for (let i = 0; i < 128; i++) {
+    const diff = inputDesc[i] - emp.faceDescriptor[i];
+    sqSum += diff * diff;
+  }
+  const distance = Math.sqrt(sqSum);
+  const threshold = getConfiguredFaceThreshold(ss);
+
+  if (!(distance < threshold)) {
+    logAudit("loginFaceRecognition", emp.nama, deviceId, userAgent, "FAILED", {
+      method: "face",
+      success: false,
+      deviceId: deviceId,
+      distance: Number(distance.toFixed(4)),
+      threshold: threshold
+    });
+    return {
+      status: "failed",
+      distance: Number(distance.toFixed(4)),
+      threshold: threshold,
+      message: "Wajah tidak cocok",
+      backendVersion: BACKEND_VERSION
+    };
+  }
+
+  const nowIso = getJakartaIsoTimestampStr();
+  try { lookup.sheet.getRange(emp.rowIndex, 13).setValue(nowIso); } catch (e) {}
+
+  const issued = issueEmployeeSession(ss, emp, deviceId, userAgent, "face");
+  if (!issued.ok) {
+    return { status: "error", message: issued.message, backendVersion: BACKEND_VERSION };
+  }
+
+  logAudit("loginFaceRecognition", emp.nama, deviceId, userAgent, "SUCCESS", {
+    method: "face",
+    success: true,
+    deviceId: deviceId,
+    idPegawai: emp.idPegawai || "-",
+    distance: Number(distance.toFixed(4)),
+    threshold: threshold,
+    timestamp: nowIso
+  });
+  return issued.response;
 }
 
 // ==================== SHEET INITIALIZERS ====================
@@ -1545,7 +2934,12 @@ function serializeEmployeeForOwner(emp) {
     duplicateName: !!emp.duplicateName,
     hasPin: !!emp.hasPin,
     pinCreatedAt: emp.pinCreatedAt || "",
-    pinLastUsed: emp.pinLastUsed || ""
+    pinLastUsed: emp.pinLastUsed || "",
+    hasWebAuthn: !!emp.hasWebAuthn,
+    webAuthnDeviceCount: emp.webAuthnDeviceCount || 0,
+    webAuthnDevices: emp.webAuthnDevices || [],
+    hasFaceDescriptor: !!emp.hasFaceDescriptor,
+    faceRegisteredAt: emp.faceRegisteredAt || ""
   };
 }
 
@@ -1556,7 +2950,7 @@ function getActiveEmployeesSafe(ss) {
   const rawList = [];
   const nameCounts = {};
 
-  // (A-M): Nama(0), ID(1), email(2), password(3 - NEVER EXPOSE), no_Telepon(4), TglAktif(5), TglNonAktif(6), Status(7), SidikWajah(8 - NEVER EXPOSE), FaceDescriptor(9 - NEVER EXPOSE), PinAbsen(10 - NEVER EXPOSE), PinCreatedAt(11), PinLastUsed(12)
+  // (A-S): Nama(0), ID(1), email(2), password(3 - NEVER EXPOSE), no_Telepon(4), TglAktif(5), TglNonAktif(6), Status(7), SidikWajah(8), FaceDescriptor(9 - NEVER EXPOSE), PinAbsen(10 - NEVER EXPOSE), PinCreatedAt(11), PinLastUsed(12), WebAuthnCols(13-18)
   for (let i = 1; i < values.length; i++) {
     const nama = values[i][0] ? String(values[i][0]).trim() : "";
     if (!nama) continue;
@@ -1566,6 +2960,8 @@ function getActiveEmployeesSafe(ss) {
     const idPegawai = values[i][1] ? String(values[i][1]).trim() : "";
     const normName = normalizeTextKey(nama);
     nameCounts[normName] = (nameCounts[normName] || 0) + 1;
+    const webAuthnDevices = readWebAuthnDevicesFromRow(values[i]);
+    const hasFace = !!parseFaceDescriptorArray(values[i][9]);
 
     rawList.push({
       idPegawai: idPegawai,
@@ -1577,7 +2973,12 @@ function getActiveEmployeesSafe(ss) {
       status: "AKTIF",
       hasPin: !!(values[i][10] && String(values[i][10]).trim() !== ""),
       pinCreatedAt: values[i][11] ? String(values[i][11]).trim() : "",
-      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : ""
+      pinLastUsed: values[i][12] ? String(values[i][12]).trim() : "",
+      hasWebAuthn: webAuthnDevices.length > 0,
+      webAuthnDeviceCount: webAuthnDevices.length,
+      webAuthnDevices: formatPublicWebAuthnDevices(webAuthnDevices),
+      hasFaceDescriptor: hasFace,
+      faceRegisteredAt: hasFace && values[i][8] ? String(values[i][8]).trim() : ""
     });
   }
 
@@ -1595,7 +2996,12 @@ function getActiveEmployeesSafe(ss) {
       duplicateName: (nameCounts[normName] || 0) > 1,
       hasPin: emp.hasPin,
       pinCreatedAt: emp.pinCreatedAt,
-      pinLastUsed: emp.pinLastUsed
+      pinLastUsed: emp.pinLastUsed,
+      hasWebAuthn: emp.hasWebAuthn,
+      webAuthnDeviceCount: emp.webAuthnDeviceCount,
+      webAuthnDevices: emp.webAuthnDevices,
+      hasFaceDescriptor: emp.hasFaceDescriptor,
+      faceRegisteredAt: emp.faceRegisteredAt
     };
   });
 }
@@ -4458,6 +5864,7 @@ function getSettings() {
   // gasUrl dari B9 (baris 9, kolom 2 -> index [8][1])
   const gasUrlVal = settingsValues[8] ? settingsValues[8][1] : "";
   const gasUrl = gasUrlVal ? String(gasUrlVal).trim() : "";
+  const faceRecognitionThreshold = getConfiguredFaceThreshold(ss);
 
   // Mengambil data posisi
   let positions = [];
@@ -4491,7 +5898,7 @@ function getSettings() {
   // Mengambil data outlet langsung dari sheet DataOutlet
   const outlets = getOutlets();
 
-  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: toleransiTelat, toleransi_telat: toleransiTelat, gasUrl: gasUrl } };
+  return { status: "success", data: { favicon: faviconUrl, requireLocation: requireLocation, enableWorkHours: enableWorkHours, outlets: outlets, positions: positions, toleransiTelat: toleransiTelat, toleransi_telat: toleransiTelat, gasUrl: gasUrl, faceRecognitionThreshold: faceRecognitionThreshold, face_recognition_threshold: faceRecognitionThreshold } };
 }
 
 /**
@@ -4553,6 +5960,15 @@ function saveSettings(data, ownerToken) {
     const toleransi = isNaN(val) ? 30 : Math.max(0, val);
     sheet.getRange("A7").setValue("toleransi_telat");
     sheet.getRange("B7").setValue(toleransi);
+  }
+
+  // Set face_recognition_threshold ke A11:B11
+  const rawFaceThresh = data.faceRecognitionThreshold !== undefined ? data.faceRecognitionThreshold : data.face_recognition_threshold;
+  if (rawFaceThresh !== undefined) {
+    const fVal = parseFloat(rawFaceThresh);
+    const clamped = isFinite(fVal) ? Math.min(0.85, Math.max(0.3, Number(fVal.toFixed(2)))) : 0.6;
+    sheet.getRange("A11").setValue("face_recognition_threshold");
+    sheet.getRange("B11").setValue(clamped);
   }
 
   // Update positions if provided
