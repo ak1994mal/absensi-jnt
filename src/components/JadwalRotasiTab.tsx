@@ -307,6 +307,81 @@ export default function JadwalRotasiTab({
     }
   };
 
+  const openCancelFromRecord = (rec: JadwalHarianRecord) => {
+    setCancelTarget(rec);
+    setCancelReason('');
+    setCancelConfirmDatang(false);
+  };
+
+  const openCancelFromEffectiveRow = (row: KehadiranHarianRow) => {
+    const rowNameKey = row.nama.trim().toLowerCase();
+    const empActiveOverrides = jadwalRows.filter(
+      (j) =>
+        j.statusJadwal !== 'DIBATALKAN' &&
+        ((row.idPegawai && j.idPegawai && row.idPegawai === j.idPegawai) ||
+          j.nama.trim().toLowerCase() === rowNameKey)
+    );
+    const matchedById = row.idJadwal
+      ? empActiveOverrides.find((j) => j.idJadwal === row.idJadwal)
+      : undefined;
+
+    if (row.ambiguousSchedule || (!matchedById && empActiveOverrides.length > 1)) {
+      setSubTab('override');
+      setSearchQuery(row.nama);
+      toast.info('Pegawai memiliki beberapa jadwal aktif hari ini. Pilih baris shift yang ingin dibatalkan.');
+      return;
+    }
+
+    const resolved =
+      matchedById ||
+      empActiveOverrides[0] ||
+      (row.idJadwal
+        ? {
+            idJadwal: row.idJadwal,
+            tanggal: row.tanggal,
+            idPegawai: row.idPegawai,
+            nama: row.nama,
+            outlet: row.outlet,
+            posisiPenugasan: row.posisiPenugasan,
+            jamMasuk: row.jamMasukJadwal,
+            jamPulang: row.jamPulangJadwal,
+            jenisPenugasan: row.jenisPenugasan,
+            statusJadwal: row.statusKehadiran === 'LIBUR' ? 'LIBUR' : 'DIJADWALKAN'
+          }
+        : null);
+
+    if (!resolved) {
+      toast.error('Data jadwal aktif tidak ditemukan untuk baris ini.');
+      return;
+    }
+    openCancelFromRecord(resolved);
+  };
+
+  const refreshRotationHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetchRiwayatRotasiApi({
+        bulan: historyBulan,
+        outlet: historyOutlet || undefined,
+        nama: historyNama || undefined
+      });
+      if (res?.authRequired) {
+        onRequireAuth();
+        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
+        return;
+      }
+      if (res?.status === 'success') {
+        setHistoryRows(Array.isArray(res.data) ? res.data : []);
+      } else {
+        throw new Error(res?.message || 'Gagal memuat riwayat rotasi.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Gagal memuat riwayat rotasi.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   const submitCancelSchedule = async () => {
     if (!cancelTarget) return;
     setSubmitting(true);
@@ -333,6 +408,9 @@ export default function JadwalRotasiTab({
       setCancelReason('');
       setCancelConfirmDatang(false);
       await loadData(selectedDate);
+      if (historyOpen) {
+        await refreshRotationHistory();
+      }
       onDataChanged?.();
     } catch (err: any) {
       toast.error(err?.message || 'Gagal membatalkan jadwal.');
@@ -343,28 +421,7 @@ export default function JadwalRotasiTab({
 
   const loadRotationHistory = async () => {
     setHistoryOpen(true);
-    setHistoryLoading(true);
-    try {
-      const res = await fetchRiwayatRotasiApi({
-        bulan: historyBulan,
-        outlet: historyOutlet || undefined,
-        nama: historyNama || undefined
-      });
-      if (res?.authRequired) {
-        onRequireAuth();
-        toast.error(res.message || 'Sesi Owner berakhir. Silakan login ulang.');
-        return;
-      }
-      if (res?.status === 'success') {
-        setHistoryRows(Array.isArray(res.data) ? res.data : []);
-      } else {
-        throw new Error(res?.message || 'Gagal memuat riwayat rotasi.');
-      }
-    } catch (err: any) {
-      toast.error(err?.message || 'Gagal memuat riwayat rotasi.');
-    } finally {
-      setHistoryLoading(false);
-    }
+    await refreshRotationHistory();
   };
 
   const filteredEffective = useMemo(() => {
@@ -637,7 +694,16 @@ export default function JadwalRotasiTab({
                             <div className="text-[10px] text-neutral-400">{row.sumberJadwal}</div>
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            <div className="inline-flex gap-1.5">
+                            <div className="inline-flex flex-wrap justify-end gap-1.5">
+                              {(row.sumberJadwal === 'JADWAL_HARIAN' || !!row.idJadwal) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCancelFromEffectiveRow(row)}
+                                  className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-[11px] font-semibold cursor-pointer"
+                                >
+                                  {row.jenisPenugasan === 'ROTASI' ? 'Batalkan Rotasi' : 'Batalkan'}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() =>
@@ -735,14 +801,10 @@ export default function JadwalRotasiTab({
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setCancelTarget(j);
-                            setCancelReason('');
-                            setCancelConfirmDatang(false);
-                          }}
+                          onClick={() => openCancelFromRecord(j)}
                           className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 font-semibold rounded cursor-pointer"
                         >
-                          Batalkan
+                          {j.jenisPenugasan === 'ROTASI' ? 'Batalkan Rotasi' : 'Batalkan'}
                         </button>
                       </div>
                     )}
@@ -1008,11 +1070,11 @@ export default function JadwalRotasiTab({
 
       {/* Modal Cancel Jadwal */}
       {cancelTarget && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setCancelTarget(null)}>
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setCancelTarget(null)}>
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-4 text-xs" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-bold text-base text-neutral-900">Batalkan JadwalHarian?</h3>
             <p className="text-neutral-600">
-              Jadwal <strong>{cancelTarget.jenisPenugasan}</strong> untuk <strong>{cancelTarget.nama}</strong> pada {cancelTarget.tanggal} akan berstatus <strong>DIBATALKAN</strong>.
+              Jadwal <strong>{cancelTarget.jenisPenugasan}</strong> untuk <strong>{cancelTarget.nama}</strong> pada {cancelTarget.tanggal} akan berstatus <strong>DIBATALKAN</strong>, dan pegawai otomatis kembali mengikuti outlet serta posisi permanennya.
             </p>
             <div>
               <label className="block font-semibold text-neutral-700 mb-1">Alasan Pembatalan</label>
@@ -1098,6 +1160,7 @@ export default function JadwalRotasiTab({
                       <th className="px-3 py-2">Outlet & Posisi</th>
                       <th className="px-3 py-2">Jenis</th>
                       <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2 text-right">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
@@ -1107,7 +1170,32 @@ export default function JadwalRotasiTab({
                         <td className="px-3 py-2 font-bold text-neutral-900">{r.nama}</td>
                         <td className="px-3 py-2">{r.outlet} • <strong className="text-[#cc0000]">{r.posisiPenugasan}</strong></td>
                         <td className="px-3 py-2 font-semibold">{r.jenisPenugasan}</td>
-                        <td className="px-3 py-2">{r.statusJadwal}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              r.statusJadwal === 'DIJADWALKAN'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : r.statusJadwal === 'LIBUR'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-neutral-200 text-neutral-600'
+                            }`}
+                          >
+                            {r.statusJadwal}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {r.statusJadwal !== 'DIBATALKAN' ? (
+                            <button
+                              type="button"
+                              onClick={() => openCancelFromRecord(r)}
+                              className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-semibold rounded cursor-pointer"
+                            >
+                              {r.jenisPenugasan === 'ROTASI' ? 'Batalkan Rotasi' : 'Batalkan'}
+                            </button>
+                          ) : (
+                            <span className="text-neutral-400">-</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
